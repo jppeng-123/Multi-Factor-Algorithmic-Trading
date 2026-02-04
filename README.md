@@ -41,7 +41,7 @@ Per walk-forward slice, the pipeline stores:
 - selected terminals (LASSO result)
 - best GA formulas + per-generation logs (no cutting)
 - in-sample / validation / out-of-sample IC stats
-- backtest performance metrics and equity curve artifacts (if enabled)
+- backtest performance metrics and equity curve artifacts
 - debug-friendly alignment checks (index/columns, NaNs, leakage guards)
 
 ## Typical workflow
