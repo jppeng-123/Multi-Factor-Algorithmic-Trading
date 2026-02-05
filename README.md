@@ -20,6 +20,8 @@ Focus: discover signals that survive out-of-sample and explain where returns com
 • Barra risk attribution (post-trade)
 
 → automatically discovers statistically significant alphas
+![strategy_return](https://github.com/user-attachments/assets/b234465f-86c3-4d62-8a04-28aed3971306)
+
 
 ---
 
@@ -33,6 +35,7 @@ Focus: discover signals that survive out-of-sample and explain where returns com
 • Barra risk attribution (post-trade)
 
 → interpretable, research-driven baseline factor strategy
+<img width="1641" height="615" alt="image" src="https://github.com/user-attachments/assets/5c0c1451-fc19-4068-9d1a-33ae18049e8b" />
 
 ---
 
