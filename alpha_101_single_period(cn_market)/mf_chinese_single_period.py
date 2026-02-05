@@ -38,7 +38,7 @@ start_train = '2020-01-01'
 end_train   = '2023-01-01'
 
 # ─── 全局数据库连接 ───────────────────────────────────────────────────────────
-CONN = pyodbc.connect("DSN=Trading;UID=sa;PWD=123456")
+CONN = pyodbc.connect("DSN,UID,PWD")
 
 # ─── 前缀匹配函数 ─────────────────────────────────────────────────────────────
 def _add_prefix(code: str) -> str | None:
@@ -3818,6 +3818,7 @@ print("max|w'D_tilde| =", np.abs(check).max())
 
 
 '''风格因子-基本面-矩阵处理'''
+
 
 
 
