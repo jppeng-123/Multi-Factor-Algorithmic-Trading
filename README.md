@@ -67,5 +67,14 @@ Alpha mining · factor research · portfolio construction · performance attribu
 
 ## 👤 Author
 
-Jinjia Peng  
+JP Peng  
 Quantitative Research · Financial Mathematics
+
+
+
+
+## Disclaimer
+This repository is for research and educational purposes only.
+Nothing here is financial advice, and performance in backtests does not guarantee future results.
+
+UNAUTHORIZED USAGE OF THE CONTENTS IS PROHIBITED AND MAY RESULT IN LEGAL ACTIONS
