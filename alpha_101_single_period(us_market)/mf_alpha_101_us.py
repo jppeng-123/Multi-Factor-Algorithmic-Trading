@@ -45,7 +45,7 @@ drive.mount('/content/drive')
 # VARIABLES (DATA LOADING & SETUP)
 
 # Create a shortcut to the file on MyDrive to run the code below
-daily = pd.read_csv('/content/drive/MyDrive/Multi-Alpha_Trading_Strategy_Project/stock_data/USDaily.csv')
+daily = pd.read_csv('mydrive')
 
 # Notebook-style previews
 display(daily.head())
