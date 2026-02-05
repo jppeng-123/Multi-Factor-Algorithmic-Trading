@@ -45,6 +45,10 @@ Returns must be attributable, not accidental
 
 If you can’t explain the PnL, you don’t own the alpha.
 
+
+<img width="1487" height="541" alt="image" src="https://github.com/user-attachments/assets/fbacc089-d0ae-4a7f-ae75-58fa7430c0a3" />
+
+
 ---
 
 ## 🛠 Stack
