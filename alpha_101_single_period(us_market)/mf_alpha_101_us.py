@@ -52,9 +52,9 @@ display(daily.head())
 len(daily.ticker.unique())
 
 # Imports the data for further use
-dividends = pd.read_csv('/content/drive/MyDrive/Multi-Alpha_Trading_Strategy_Project/stock_data/USDividend.csv')
-us_split = pd.read_csv('/content/drive/MyDrive/Multi-Alpha_Trading_Strategy_Project/stock_data/USSplit.csv')
-gics_class = pd.read_excel('/content/drive/MyDrive/Multi-Alpha_Trading_Strategy_Project/bloomberg_data/GICS_Classification.xlsx')
+dividends = pd.read_csv('mydrive')
+us_split = pd.read_csv('mydrive')
+gics_class = pd.read_excel('mydrive')
 print(gics_class)
 
 count_sector = gics_class['GICS_SECTOR'].notnull().sum()
