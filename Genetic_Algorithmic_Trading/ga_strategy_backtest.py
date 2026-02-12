@@ -42,23 +42,13 @@ from sklearn.preprocessing import StandardScaler
 
 
 
-# ============================================================
-# 0) Inputs (keep as-is)
-# ============================================================
+target_index = logret.index
 
-target_index = logret.index   # e.g., close.index / idx_valid / the index you want to align to
-
-# 3) Use your existing function to get aligned SPY close (index matches target_index exactly)
 spy_close_price = ga_spy_aggs_to_close_series(
     spy_aggs=spy,
     target_index=target_index,
     tz="America/New_York"
 )
-
-
-# ============================================================
-# FULL CODE (PARAMS MOVED TO TOP; ONLY PARAM CHANGES)
-# ============================================================
 
 
 
