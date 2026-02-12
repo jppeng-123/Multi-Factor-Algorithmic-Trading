@@ -53,41 +53,31 @@ spy_close_price = ga_spy_aggs_to_close_series(
 
 
 
-# ============================================================
-# 0) PARAMS (EDIT HERE ONLY)
-#   - Tuned for: ~100-stock US small universe + 5D GA factor
-#   - More realistic frictions + more robust against overfit
-# ============================================================
-
 CFG = {
-    # ---------- Engine / Portfolio ----------
     "engine": {
         "init_cash": 1e8,
-        "hold_days": 5,           # locked by implementation
-        "n_pick": 15,             # more diversified for ~100-stock universe
-        "tau_softmax": 1.15,      # less extreme concentration / more robust
-        "fee_per_share": 0.001,   # modern fee scale (impact should dominate)
-        "impact_bps": 0.0012,     # 12 bps for small universe + daily trading + softmax
+        "hold_days": 5,
+        "n_pick": 15,
+        "tau_softmax": 1.15,
+        "fee_per_share": 0.001,
+        "impact_bps": 0.0012,
     },
 
-    # ---------- Sample Space ----------
     "sample_space": {
-        "amo_window": 20,             # smoother liquidity filter
-        "amo_threshold": 2e7,         # ~$20m/day dollar volume
-        "min_listed_days": 120,       # avoid IPO/new listing noise
+        "amo_window": 20,
+        "amo_threshold": 2e7,
+        "min_listed_days": 120,
         "require_price_positive": True,
     },
 
-    # ---------- Backtest wrapper ----------
     "wrapper": {
-        "strict_tminus1": True,          # keep: no look-ahead
-        "liquidation_buffer_days": 15,   # more buffer for maturity + sell fail
-        "min_cs_n": 50,                  # stricter gate for ~100-stock universe
-        "start": None,                   # auto infer
-        "end": None,                     # auto infer
+        "strict_tminus1": True,
+        "liquidation_buffer_days": 15,
+        "min_cs_n": 50,
+        "start": None,
+        "end": None,
     },
 
-    # ---------- Reporting ----------
     "reporting": {
         "trading_days": 252,
     },
