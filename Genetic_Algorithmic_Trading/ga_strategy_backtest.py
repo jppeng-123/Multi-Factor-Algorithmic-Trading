@@ -53,41 +53,31 @@ spy_close_price = ga_spy_aggs_to_close_series(
 
 
 
-# ============================================================
-# 0) PARAMS (EDIT HERE ONLY)
-#   - Tuned for: ~100-stock US small universe + 5D GA factor
-#   - More realistic frictions + more robust against overfit
-# ============================================================
-
 CFG = {
-    # ---------- Engine / Portfolio ----------
     "engine": {
         "init_cash": 1e8,
-        "hold_days": 5,           # locked by implementation
-        "n_pick": 15,             # more diversified for ~100-stock universe
-        "tau_softmax": 1.15,      # less extreme concentration / more robust
-        "fee_per_share": 0.001,   # modern fee scale (impact should dominate)
-        "impact_bps": 0.0012,     # 12 bps for small universe + daily trading + softmax
+        "hold_days": 5,
+        "n_pick": 15,
+        "tau_softmax": 1.15,
+        "fee_per_share": 0.001,
+        "impact_bps": 0.0012,
     },
 
-    # ---------- Sample Space ----------
     "sample_space": {
-        "amo_window": 20,             # smoother liquidity filter
-        "amo_threshold": 2e7,         # ~$20m/day dollar volume
-        "min_listed_days": 120,       # avoid IPO/new listing noise
+        "amo_window": 20,
+        "amo_threshold": 2e7,
+        "min_listed_days": 120,
         "require_price_positive": True,
     },
 
-    # ---------- Backtest wrapper ----------
     "wrapper": {
-        "strict_tminus1": True,          # keep: no look-ahead
-        "liquidation_buffer_days": 15,   # more buffer for maturity + sell fail
-        "min_cs_n": 50,                  # stricter gate for ~100-stock universe
-        "start": None,                   # auto infer
-        "end": None,                     # auto infer
+        "strict_tminus1": True,
+        "liquidation_buffer_days": 15,
+        "min_cs_n": 50,
+        "start": None,
+        "end": None,
     },
 
-    # ---------- Reporting ----------
     "reporting": {
         "trading_days": 252,
     },
@@ -2159,20 +2149,9 @@ def plot_window_daily_return_hist(win: dict, title="Window Daily Return Distribu
     return fig
 
 
-# ============================================================
-# 11) CLASS WRAPPER (packaged as a class; original functions/calls unchanged)
-# ============================================================
-
 class BacktestFramework:
-    """
-    Industry-grade packaging:
-    - Keep all original functions at module level (compatible with your existing usage)
-    - Also expose them on the class as staticmethods (namespace management)
-    - Keep CFG/constants on class attributes
-    """
     CFG = CFG
 
-    # constants
     ORD_OK = ORD_OK
     ORD_INELIGIBLE = ORD_INELIGIBLE
     ORD_NO_PRICE = ORD_NO_PRICE
@@ -2181,7 +2160,6 @@ class BacktestFramework:
     LOT_EXIT_NORMAL = LOT_EXIT_NORMAL
     LOT_EXIT_DELAY = LOT_EXIT_DELAY
 
-    # utils
     _to_datetime_index = staticmethod(_to_datetime_index)
     _annualize_from_nav = staticmethod(_annualize_from_nav)
     _roll_h_stats = staticmethod(_roll_h_stats)
@@ -2191,23 +2169,19 @@ class BacktestFramework:
     _pick_book_frac = staticmethod(_pick_book_frac)
     _align_close_volume = staticmethod(_align_close_volume)
 
-    # sample space
     build_sample_space_amo_listing = staticmethod(build_sample_space_amo_listing)
 
-    # numba kernels (keep as attributes for completeness)
     _count_eligible_finite = staticmethod(_count_eligible_finite)
     _cs_zscore_one_day = staticmethod(_cs_zscore_one_day)
     _softmax_topn_weights = staticmethod(_softmax_topn_weights)
     _build_w_trade_stage = staticmethod(_build_w_trade_stage)
     _bt_stage_5d_lots = staticmethod(_bt_stage_5d_lots)
 
-    # main run + analytics
     _compute_latest_status = staticmethod(_compute_latest_status)
     run_backtest_ga_wf_softmax_5d = staticmethod(run_backtest_ga_wf_softmax_5d)
     _newey_west_mean_test = staticmethod(_newey_west_mean_test)
     build_backtest_results = staticmethod(build_backtest_results)
 
-    # plotting
     _set_presentation_style = staticmethod(_set_presentation_style)
     _legend_below = staticmethod(_legend_below)
     plot_nav = staticmethod(plot_nav)
@@ -2219,7 +2193,6 @@ class BacktestFramework:
     plot_factor_exposure = staticmethod(plot_factor_exposure)
     plot_factor_contribution = staticmethod(plot_factor_contribution)
 
-    # printing + stage window
     print_backtest_summary = staticmethod(print_backtest_summary)
     _pick_best_worst_stage = staticmethod(_pick_best_worst_stage)
     _build_window_bt_from_stage = staticmethod(_build_window_bt_from_stage)
@@ -2227,11 +2200,6 @@ class BacktestFramework:
     plot_nav_window = staticmethod(plot_nav_window)
     plot_drawdown_window = staticmethod(plot_drawdown_window)
     plot_window_daily_return_hist = staticmethod(plot_window_daily_return_hist)
-
-
-# ============================================================
-# 10) USAGE (copy/paste) -- keep your original usage structure
-# ============================================================
 
 sample_space = build_sample_space_amo_listing(
     close_df=close_price,
