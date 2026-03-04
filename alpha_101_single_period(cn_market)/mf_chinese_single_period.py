@@ -1,46 +1,44 @@
-import pyodbc
-import pandas as pd
-import numpy as np
-from datetime import datetime
-import matplotlib.pyplot as plt
-import warnings
-from scipy.stats import skew, kurtosis
-import seaborn as sns
-from pathlib import Path
-from scipy.stats import t, norm
-import statsmodels.api as sm
-import networkx as nx
-from itertools import combinations
-import xgboost as xgb
-from numpy.linalg import LinAlgError
-import numba as nb
-from typing import Dict
-import inspect
-import math, inspect, warnings
-from statsmodels.tsa.stattools import acf, pacf
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-import pickle
-from typing import Tuple
-from joblib import Parallel, delayed
-from arch import arch_model
-from scipy.stats import mstats
-from scipy.special import gamma as _gamma
-from hmmlearn.hmm import GaussianHMM
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
-from numba import njit
+﻿import inspect
 import itertools
+import math
+import os
+import pickle
+import warnings
+from datetime import datetime
+from itertools import combinations
 from pathlib import Path
+from typing import Dict, Tuple
 
+import matplotlib.pyplot as plt
+import networkx as nx
+import numba as nb
+import numpy as np
+import pandas as pd
+import pyodbc
+import seaborn as sns
+import statsmodels.api as sm
+import xgboost as xgb
+from arch import arch_model
+from hmmlearn.hmm import GaussianHMM
+from joblib import Parallel, delayed
+from numba import njit
+from numpy.linalg import LinAlgError
+from scipy.special import gamma as _gamma
+from scipy.stats import kurtosis, mstats, norm, skew, t
+from sklearn.metrics import confusion_matrix, mean_absolute_error, mean_squared_error, precision_recall_fscore_support, r2_score
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.stattools import acf, pacf
 
-# 1. 定义训练期起止
+DEFAULT_DATA_DIR = Path(os.getenv("MF_DATA_DIR", str(Path(__file__).resolve().parent / "data")))
+SW_CLASSCODE_PATH = Path(os.getenv("SW_CLASSCODE_PATH", str(DEFAULT_DATA_DIR / "SwClassCode_2021.xls")))
+GICS_INDUSTRY_CSV_PATH = Path(os.getenv("GICS_INDUSTRY_CSV_PATH", str(DEFAULT_DATA_DIR / "GICS_Industry.csv")))
 start_train = '2020-01-01'
 end_train   = '2023-01-01'
 
-# ─── 全局数据库连接 ───────────────────────────────────────────────────────────
+
 CONN = pyodbc.connect("DSN,UID,PWD")
 
-# ─── 前缀匹配函数 ─────────────────────────────────────────────────────────────
+
 def _add_prefix(code: str) -> str | None:
     sse  = {"600","601","603","605","688","689"}
     szse = {"000","001","002","003","300","301"}
@@ -50,7 +48,6 @@ def _add_prefix(code: str) -> str | None:
     return None
 
 
-# ─── 基础数据加载 ─────────────────────────────────────────────────────────────
 def load_open_price(start: str = "2020-01-01",
                     end:   str = "2025-06-13") -> pd.DataFrame:
     sql = f"""
@@ -132,8 +129,8 @@ def load_turnover(start: str = "2020-01-01",
 def load_market_cap(start: str = "2020-01-01",
                     end:   str = "2025-06-13") -> pd.DataFrame:
     """
-    读取 stock_a_share_cap 表中的总市值 (total_mv)，
-    返回一个 DataFrame，行索引为 data_date，列为 symbol，值为 total_mv。
+    Load total market capitalization (total_mv) from stock_a_share_cap.
+    Return a DataFrame indexed by data_date, with symbol columns and total_mv values.
     """
     sql = f"""
     SELECT symbol,
@@ -149,8 +146,8 @@ def load_market_cap(start: str = "2020-01-01",
 def load_market_cap_float(start: str = "2020-01-01",
                           end:   str = "2025-06-13") -> pd.DataFrame:
     """
-    读取 stock_a_share_cap 表中的流通市值 (circulating_mv)，
-    返回一个 DataFrame，行索引为 data_date，列为 symbol，值为 circulating_mv。
+    Load float market capitalization (circulating_mv) from stock_a_share_cap.
+    Return a DataFrame indexed by data_date, with symbol columns and circulating_mv values.
     """
     sql = f"""
     SELECT symbol,
@@ -166,8 +163,8 @@ def load_market_cap_float(start: str = "2020-01-01",
 def load_zz1000_index(start: str = "2020-01-01",
                       end:   str = "2025-06-13") -> pd.DataFrame:
     """
-    读取 stock_index_zz1000 表中中证1000指数，
-    返回 T×1 的 DataFrame，索引为 trade_date，列名 zz1000。
+    Load the CSI 1000 index from stock_index_zz1000.
+    Return a T x 1 DataFrame indexed by trade_date, with a single zz1000 column.
     """
     sql = f"""
     SELECT
@@ -178,11 +175,11 @@ def load_zz1000_index(start: str = "2020-01-01",
     ORDER BY trade_date
     """
     df = pd.read_sql(sql, CONN, parse_dates=['trade_date'])
-    # 重命名并设置索引
+
     df = df.rename(columns={'index_value': 'zz1000'})
     return df.set_index('trade_date')[['zz1000']]
 
-# ─── 分红/送股/拆股加载 ────────────────────────────────────────────────────
+
 def load_dividend(start: str = "2020-01-01",
                   end:   str = "2025-06-13",
                   close_price: pd.DataFrame = None) -> pd.DataFrame:
@@ -225,7 +222,7 @@ def load_split(start: str = "2020-01-01",
     mat = df.pivot(index='ex_dividend_date', columns='sym', values='split_share')
     return mat.reindex(index=close_price.index, columns=close_price.columns)
 
-# ─── 对数收益率计算 ─────────────────────────────────────────────────────────
+
 def load_logret(close: pd.DataFrame,
                 dividend: pd.DataFrame,
                 bonus: pd.DataFrame,
@@ -239,7 +236,7 @@ def load_logret(close: pd.DataFrame,
     lr[mask]   = ca_lr[mask]
     return lr
 
-# ─── 样本空间构建 ────────────────────────────────────────────────────────────
+
 def load_amt_flag(amount: pd.DataFrame,
                   rolling_win: int = 10,
                   liquidity_thresh: float = 1e8,
@@ -262,25 +259,21 @@ def load_sample_space(amt_flag: pd.DataFrame,
     return (amt_flag & list_flag).astype(int)
 
 
-# 辅助函数 ────────────────────────────────────────────────────────────────
-
-# 基础函数
-
 def log(x: pd.DataFrame) -> pd.DataFrame:
     return np.log(x)
 
 def sign(x: pd.DataFrame) -> pd.DataFrame:
     return np.sign(x)
 
-# 截面排序
+
 def rank(x: pd.DataFrame) -> pd.DataFrame:
     return x.rank(axis=1, pct=True)
 
-# 时间延迟
+
 def delay(x: pd.DataFrame, d: float) -> pd.DataFrame:
     return x.shift(int(np.floor(d)))
 
-# 时间序列相关与协方差
+
 def correlation(x: pd.DataFrame, y: pd.DataFrame, d: float) -> pd.DataFrame:
     w = int(np.floor(d))
     return x.rolling(window=w, min_periods=w).corr(y)
@@ -289,20 +282,20 @@ def covariance(x: pd.DataFrame, y: pd.DataFrame, d: float) -> pd.DataFrame:
     w = int(np.floor(d))
     return x.rolling(window=w, min_periods=w).cov(y)
 
-# 缩放，使 sum(abs(x)) = a（默认 a = 1）
+
 def scale(x: pd.DataFrame, a: float = 1.0) -> pd.DataFrame:
     abs_sum = x.abs().sum(axis=1).replace(0, np.nan)
     return x.mul(a, axis=0).div(abs_sum, axis=0)
 
-# 差分
+
 def delta(x: pd.DataFrame, d: float) -> pd.DataFrame:
     return x - x.shift(int(np.floor(d)))
 
-# 有符号幂
+
 def signedpower(x: pd.DataFrame, a: float) -> pd.DataFrame:
     return np.sign(x) * (x.abs() ** a)
 
-# 线性衰减加权移动平均
+
 def decay_linear(x: pd.DataFrame, d: float) -> pd.DataFrame:
     w = int(np.floor(d))
     weights = np.arange(w, 0, -1, dtype=float)
@@ -311,7 +304,7 @@ def decay_linear(x: pd.DataFrame, d: float) -> pd.DataFrame:
         return float((weights * arr).sum() / norm)
     return x.rolling(window=w, min_periods=w).apply(_lw, raw=True)
 
-# 行业中性化（分组去均值）
+
 def indneutralize(x: pd.DataFrame, g: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=x.index, columns=x.columns, dtype=float)
     for t in x.index:
@@ -320,7 +313,7 @@ def indneutralize(x: pd.DataFrame, g: pd.DataFrame) -> pd.DataFrame:
         out.loc[t] = vals - vals.groupby(grp).transform("mean")
     return out
 
-# 时序操作符
+
 def ts_min(x: pd.DataFrame, d: float) -> pd.DataFrame:
     w = int(np.floor(d))
     return x.rolling(window=w, min_periods=w).min()
@@ -359,11 +352,10 @@ def stddev(x: pd.DataFrame, d: float) -> pd.DataFrame:
     w = int(np.floor(d))
     return x.rolling(window=w, min_periods=w).std()
 
-#---------------------------------------------------------------------------
 
 def load_stock_sector_table(conn: pyodbc.Connection) -> pd.DataFrame:
     sql = """
-        SELECT 
+        SELECT
             symbol,
             CAST(start_date AS DATE) AS start_date,
             industry_code
@@ -404,12 +396,25 @@ def build_industry_code_df(
 
 def load_mapping_df(
     mapping_file_path: str,
-    code_col: str = '行业代码',
-    level1_col: str = '一级行业名称',
-    level2_col: str = '二级行业名称',
-    level3_col: str = '三级行业名称'
+    code_col: str = "industry_code",
+    level1_col: str = "level1",
+    level2_col: str = "level2",
+    level3_col: str = "level3",
 ) -> pd.DataFrame:
     mapping_full = pd.read_excel(mapping_file_path, dtype=str, engine='xlrd')
+
+    def _resolve_column(preferred: str, fallback_pos: int) -> str:
+        if preferred in mapping_full.columns:
+            return preferred
+        if fallback_pos < len(mapping_full.columns):
+            return mapping_full.columns[fallback_pos]
+        raise KeyError(f"Unable to resolve required mapping column: {preferred}")
+
+    code_col = _resolve_column(code_col, 0)
+    level1_col = _resolve_column(level1_col, 1)
+    level2_col = _resolve_column(level2_col, 2)
+    level3_col = _resolve_column(level3_col, 3)
+
     mapping_full = mapping_full.rename(columns={
         code_col: 'industry_code',
         level1_col: 'level1',
@@ -463,11 +468,10 @@ def align_factor_df_to_close(factor_df, close_df, default_value="UNK"):
     return aligned
 
 
-# 一键切片函数
-def sl(df): 
+def sl(df):
     return df.loc[start_train:end_train]
 
-# ─── Alpha 1 ────────────────────────────────────────────────────────────────
+
 def load_alpha1(close_shifted, logret_shifted, sample):
     r    = logret_shifted
     s20  = stddev(r, 20)
@@ -477,49 +481,49 @@ def load_alpha1(close_shifted, logret_shifted, sample):
     alpha = rank(k) - 0.5
     return alpha.where(sample == 1)
 
-# ─── Alpha 2 ────────────────────────────────────────────────────────────────
+
 def load_alpha2(close_shifted, open_shifted, volume_shifted, sample):
     r1 = rank(delta(np.log(volume_shifted), 2))
     r2 = rank((close_shifted - open_shifted) / open_shifted)
     alpha = -correlation(r1, r2, 6)
     return alpha.where(sample == 1)
 
-# ─── Alpha 3 ────────────────────────────────────────────────────────────────
+
 def load_alpha3(open_shifted, volume_shifted, sample):
     alpha = -correlation(rank(open_shifted), rank(volume_shifted), 10)
     return alpha.where(sample == 1)
 
-# ─── Alpha 4 ────────────────────────────────────────────────────────────────
+
 def load_alpha4(low_shifted, sample):
     alpha = -ts_rank(rank(low_shifted), 9)
     return alpha.where(sample == 1)
 
-# ─── Alpha 5 ────────────────────────────────────────────────────────────────
+
 def load_alpha5(open_shifted, close_shifted, vwap_shifted, sample):
     part1 = rank(open_shifted - ts_sum(vwap_shifted, 10) / 10)
     part2 = -abs(rank(close_shifted - vwap_shifted))
     alpha = part1 * part2
     return alpha.where(sample == 1)
 
-# ─── Alpha 6 ────────────────────────────────────────────────────────────────
+
 def load_alpha6(open_shifted, volume_shifted, sample):
     alpha = -correlation(open_shifted, volume_shifted, 10)
     return alpha.where(sample == 1)
 
-# ─── Alpha 7 ────────────────────────────────────────────────────────────────
+
 def load_alpha7(close_shifted, adv20_shifted, volume_shifted, sample):
     d7   = delta(close_shifted, 7)
     core = -ts_rank(abs(d7), 60) * sign(d7)
     alpha = core.where(adv20_shifted < volume_shifted, -1.0)
     return alpha.where(sample == 1)
 
-# ─── Alpha 8 ────────────────────────────────────────────────────────────────
+
 def load_alpha8(open_shifted, logret_shifted, sample):
     term  = ts_sum(open_shifted, 5) * ts_sum(logret_shifted, 5)
     alpha = -rank(term - delay(term, 10))
     return alpha.where(sample == 1)
 
-# ─── Alpha 9 ────────────────────────────────────────────────────────────────
+
 def load_alpha9(close_shifted, sample):
     d1    = delta(close_shifted, 1)
     cond1 = ts_min(d1, 5) > 0
@@ -527,7 +531,7 @@ def load_alpha9(close_shifted, sample):
     alpha = d1.where(cond1 | cond2, -d1)
     return alpha.where(sample == 1)
 
-# ─── Alpha 10 ───────────────────────────────────────────────────────────────
+
 def load_alpha10(close_shifted, sample):
     d1    = delta(close_shifted, 1)
     cond1 = ts_min(d1, 4) > 0
@@ -536,41 +540,41 @@ def load_alpha10(close_shifted, sample):
     alpha = rank(tmp)
     return alpha.where(sample == 1)
 
-# ─── Alpha 11 ───────────────────────────────────────────────────────────────
+
 def load_alpha11(close_shifted, vwap_shifted, volume_shifted, sample):
     diff  = vwap_shifted - close_shifted
     part  = rank(ts_max(diff, 3)) + rank(ts_min(diff, 3))
     alpha = part * rank(delta(volume_shifted, 3))
     return alpha.where(sample == 1)
 
-# ─── Alpha 12 ───────────────────────────────────────────────────────────────
+
 def load_alpha12(close_shifted, volume_shifted, sample):
     alpha = sign(delta(volume_shifted, 1)) * (-delta(close_shifted, 1))
     return alpha.where(sample == 1)
 
-# ─── Alpha 13 ───────────────────────────────────────────────────────────────
+
 def load_alpha13(close_shifted, volume_shifted, sample):
     alpha = -rank(covariance(rank(close_shifted), rank(volume_shifted), 5))
     return alpha.where(sample == 1)
 
-# ─── Alpha 14 ───────────────────────────────────────────────────────────────
+
 def load_alpha14(open_shifted, volume_shifted, logret_shifted, sample):
     part1 = -rank(delta(logret_shifted, 3))
     alpha = part1 * correlation(open_shifted, volume_shifted, 10)
     return alpha.where(sample == 1)
 
-# ─── Alpha 15 ───────────────────────────────────────────────────────────────
+
 def load_alpha15(high_shifted, volume_shifted, sample):
     corr  = correlation(rank(high_shifted), rank(volume_shifted), 3)
     alpha = -ts_sum(rank(corr), 3)
     return alpha.where(sample == 1)
 
-# ─── Alpha 16 ───────────────────────────────────────────────────────────────
+
 def load_alpha16(high_shifted, volume_shifted, sample):
     alpha = -rank(covariance(rank(high_shifted), rank(volume_shifted), 5))
     return alpha.where(sample == 1)
 
-# ─── Alpha 17 ───────────────────────────────────────────────────────────────
+
 def load_alpha17(close_shifted, volume_shifted, adv20_shifted, sample):
     part1 = -rank(ts_rank(close_shifted, 10))
     part2 = rank(delta(delta(close_shifted, 1), 1))
@@ -578,14 +582,14 @@ def load_alpha17(close_shifted, volume_shifted, adv20_shifted, sample):
     alpha = part1 * part2 * part3
     return alpha.where(sample == 1)
 
-# ─── Alpha 18 ───────────────────────────────────────────────────────────────
+
 def load_alpha18(close_shifted, open_shifted, sample):
     term  = stddev(abs(close_shifted - open_shifted), 5) + (close_shifted - open_shifted)
     corr  = correlation(close_shifted, open_shifted, 10)
     alpha = -rank(term + corr)
     return alpha.where(sample == 1)
 
-# ─── Alpha 19 ───────────────────────────────────────────────────────────────
+
 def load_alpha19(close_shifted, logret_shifted, sample):
     expr  = (close_shifted - delay(close_shifted, 7)) + delta(close_shifted, 7)
     part1 = -sign(expr)
@@ -593,7 +597,7 @@ def load_alpha19(close_shifted, logret_shifted, sample):
     alpha = part1 * part2
     return alpha.where(sample == 1)
 
-# ─── Alpha 20 ───────────────────────────────────────────────────────────────
+
 def load_alpha20(open_shifted, high_shifted, close_shifted, low_shifted, sample):
     r1 = rank(open_shifted - delay(high_shifted, 1))
     r2 = rank(open_shifted - delay(close_shifted, 1))
@@ -601,7 +605,7 @@ def load_alpha20(open_shifted, high_shifted, close_shifted, low_shifted, sample)
     alpha = -r1 * r2 * r3
     return alpha.where(sample == 1)
 
-# ─── Alpha 21 ───────────────────────────────────────────────────────────────
+
 def load_alpha21(close_shifted, volume_shifted, adv20_shifted, sample):
     m8   = ts_sum(close_shifted, 8) / 8
     s8   = stddev(close_shifted, 8)
@@ -620,7 +624,7 @@ def load_alpha21(close_shifted, volume_shifted, adv20_shifted, sample):
 
     return val.where(sample == 1)
 
-# ─── Alpha 22 ───────────────────────────────────────────────────────────────
+
 def load_alpha22(high_shifted, volume_shifted, close_shifted, sample):
     corr5       = correlation(high_shifted, volume_shifted, 5)
     delta_corr5 = delta(corr5, 5)
@@ -631,7 +635,7 @@ def load_alpha22(high_shifted, volume_shifted, close_shifted, sample):
     val = -delta_corr5 * r_std20
     return val.where(sample == 1)
 
-# ─── Alpha 23 ───────────────────────────────────────────────────────────────
+
 def load_alpha23(high_shifted, sample):
     m20  = ts_sum(high_shifted, 20) / 20
     cond = m20 < high_shifted
@@ -642,7 +646,7 @@ def load_alpha23(high_shifted, sample):
 
     return val.where(sample == 1)
 
-# ─── Alpha 24 ───────────────────────────────────────────────────────────────
+
 def load_alpha24(close_shifted, sample):
     m100   = ts_sum(close_shifted, 100) / 100
     d_m100 = delta(m100, 100)
@@ -661,14 +665,14 @@ def load_alpha24(close_shifted, sample):
 
     return val.where(sample == 1)
 
-# ─── Alpha 25 ───────────────────────────────────────────────────────────────
+
 def load_alpha25(logret_shifted, adv20_shifted, vwap_shifted,
                  high_shifted, close_shifted, sample):
     expr   = ((-1 * logret_shifted) * adv20_shifted) * vwap_shifted * (high_shifted - close_shifted)
     ranked = rank(expr)
     return ranked.where(sample == 1)
 
-# ─── Alpha 26 ───────────────────────────────────────────────────────────────
+
 def load_alpha26(volume_shifted, high_shifted, sample):
     tr_v5  = ts_rank(volume_shifted, 5)
     tr_h5  = ts_rank(high_shifted, 5)
@@ -679,7 +683,7 @@ def load_alpha26(volume_shifted, high_shifted, sample):
     val = -tmax3
     return val.where(sample == 1)
 
-# ─── Alpha 27 ───────────────────────────────────────────────────────────────
+
 def load_alpha27(volume_shifted, amount_shifted, sample):
     v1       = volume_shifted
     vw1      = amount_shifted / volume_shifted
@@ -694,7 +698,7 @@ def load_alpha27(volume_shifted, amount_shifted, sample):
     val = val.where(~(r_m2 > 0.5), -1.0)
     return val.where(sample == 1)
 
-# ─── Alpha 28 ───────────────────────────────────────────────────────────────
+
 def load_alpha28(adv20_shifted, low_shifted, high_shifted, close_shifted, sample):
     corr5 = correlation(adv20_shifted, low_shifted, 5)
 
@@ -704,7 +708,7 @@ def load_alpha28(adv20_shifted, low_shifted, high_shifted, close_shifted, sample
     scaled = scale(expr)
     return scaled.where(sample == 1)
 
-# ─── Alpha 29 ───────────────────────────────────────────────────────────────
+
 def load_alpha29(close_shifted, logret_shifted, sample):
     neg_delta = -delta(close_shifted, 1)
     r1        = rank(neg_delta)
@@ -724,7 +728,7 @@ def load_alpha29(close_shifted, logret_shifted, sample):
     val = part1 + part2
     return val.where(sample == 1)
 
-# ─── Alpha 30 ───────────────────────────────────────────────────────────────
+
 def load_alpha30(close_shifted, volume_shifted, sample):
     d1   = close_shifted - delay(close_shifted, 1)
     d2   = delay(close_shifted, 1) - delay(close_shifted, 2)
@@ -739,7 +743,7 @@ def load_alpha30(close_shifted, volume_shifted, sample):
     val = (1.0 - r_expr) * (vol5 / vol20)
     return val.where(sample == 1)
 
-# ─── Alpha 31 ───────────────────────────────────────────────────────────────
+
 def load_alpha31(close_shifted, adv20_shifted, low_shifted, sample):
     d10   = delta(close_shifted, 10)
     r_d10 = rank(d10)
@@ -761,7 +765,7 @@ def load_alpha31(close_shifted, adv20_shifted, low_shifted, sample):
     val = r3 + r_neg_d3 + s_corr
     return val.where(sample == 1)
 
-# ─── Alpha 32 ───────────────────────────────────────────────────────────────
+
 def load_alpha32(close_shifted, vwap_shifted, sample):
     mean7  = ts_sum(close_shifted, 7) / 7
     expr1  = mean7 - close_shifted
@@ -773,13 +777,13 @@ def load_alpha32(close_shifted, vwap_shifted, sample):
     val = s1 + 20.0 * s2
     return val.where(sample == 1)
 
-# ─── Alpha 33 ───────────────────────────────────────────────────────────────
+
 def load_alpha33(open_shifted, close_shifted, sample):
     expr   = (open_shifted / close_shifted) - 1.0
     r_expr = rank(expr)
     return r_expr.where(sample == 1)
 
-# ─── Alpha 34 ───────────────────────────────────────────────────────────────
+
 def load_alpha34(close_shifted, logret_shifted, sample):
     sd2     = stddev(logret_shifted, 2)
     sd5     = stddev(logret_shifted, 5)
@@ -795,7 +799,7 @@ def load_alpha34(close_shifted, logret_shifted, sample):
     r_expr  = rank(expr)
     return r_expr.where(sample == 1)
 
-# ─── Alpha 35 ───────────────────────────────────────────────────────────────
+
 def load_alpha35(close_shifted, high_shifted, low_shifted, volume_shifted,
                  logret_shifted, sample):
     tr_vol32   = ts_rank(volume_shifted, 32)
@@ -810,7 +814,7 @@ def load_alpha35(close_shifted, high_shifted, low_shifted, volume_shifted,
     val = tr_vol32 * part2 * part3
     return val.where(sample == 1)
 
-# ─── Alpha 36 ───────────────────────────────────────────────────────────────
+
 def load_alpha36(close_shifted, open_shifted, volume_shifted, vwap_shifted,
                  adv20_shifted, logret_shifted, sample):
     A         = close_shifted - open_shifted
@@ -837,7 +841,7 @@ def load_alpha36(close_shifted, open_shifted, volume_shifted, vwap_shifted,
     val = partA + partB + partC + partD + partE
     return val.where(sample == 1)
 
-# ─── Alpha 37 ───────────────────────────────────────────────────────────────
+
 def load_alpha37(open_shifted, close_shifted, sample):
     A        = (open_shifted - close_shifted)
     corr200  = correlation(delay(A, 1), close_shifted, 200)
@@ -848,7 +852,7 @@ def load_alpha37(open_shifted, close_shifted, sample):
     val = r_corr200 + r_open_minus_close
     return val.where(sample == 1)
 
-# ─── Alpha 38 ───────────────────────────────────────────────────────────────
+
 def load_alpha38(close_shifted, open_shifted, sample):
     tr_close10       = ts_rank(close_shifted, 10)
     r_tr_close10     = rank(tr_close10)
@@ -859,7 +863,7 @@ def load_alpha38(close_shifted, open_shifted, sample):
     val = part1 * r_close_over_open
     return val.where(sample == 1)
 
-# ─── Alpha 39 ───────────────────────────────────────────────────────────────
+
 def load_alpha39(close_shifted, volume_shifted, adv20_shifted,
                  logret_shifted, sample):
     ratio_vol_adv20 = volume_shifted.div(adv20_shifted)
@@ -879,7 +883,7 @@ def load_alpha39(close_shifted, volume_shifted, adv20_shifted,
     val = partA * partB
     return val.where(sample == 1)
 
-# ─── Alpha 40 ───────────────────────────────────────────────────────────────
+
 def load_alpha40(high_shifted, volume_shifted, sample):
     s10    = stddev(high_shifted, 10)
     r_s10  = rank(s10)
@@ -887,13 +891,13 @@ def load_alpha40(high_shifted, volume_shifted, sample):
     val    = -r_s10 * corr10
     return val.where(sample == 1)
 
-# ─── Alpha 41 ───────────────────────────────────────────────────────────────
+
 def load_alpha41(high_shifted, low_shifted, vwap_shifted, sample):
     geom_hl = (high_shifted * low_shifted).pow(0.5)
     val     = geom_hl - vwap_shifted
     return val.where(sample == 1)
 
-# ─── Alpha 43 ───────────────────────────────────────────────────────────────
+
 def load_alpha43(close_shifted, volume_shifted, adv20_shifted, sample):
     ratio_v = volume_shifted.div(adv20_shifted).replace([np.inf, -np.inf], np.nan)
     tr1     = ts_rank(ratio_v, 20)
@@ -902,14 +906,14 @@ def load_alpha43(close_shifted, volume_shifted, adv20_shifted, sample):
     val     = tr1 * tr2
     return val.where(sample == 1)
 
-# ─── Alpha 44 ───────────────────────────────────────────────────────────────
+
 def load_alpha44(high_shifted, volume_shifted, sample):
     r_vol     = rank(volume_shifted)
     corr5     = correlation(high_shifted, r_vol, 5)
     val       = -corr5
     return val.where(sample == 1)
 
-# ─── Alpha 45 ───────────────────────────────────────────────────────────────
+
 def load_alpha45(close_shifted, volume_shifted, sample):
     d5        = delay(close_shifted, 5)
     sma20     = ts_sum(d5, 20) / 20
@@ -922,7 +926,7 @@ def load_alpha45(close_shifted, volume_shifted, sample):
     val       = - (r_sma20 * corr_c_v2 * r_corrsum)
     return val.where(sample == 1)
 
-# ─── Alpha 46 ───────────────────────────────────────────────────────────────
+
 def load_alpha46(close_shifted, sample):
     c    = close_shifted
     c10  = delay(c, 10)
@@ -939,7 +943,7 @@ def load_alpha46(close_shifted, sample):
     val   = val.where(~mask3, -1.0 * (c - c1))
     return val.where(sample == 1)
 
-# ─── Alpha 47 ───────────────────────────────────────────────────────────────
+
 def load_alpha47(close_shifted, high_shifted, volume_shifted,
                  adv20_shifted, vwap_shifted, sample):
     inv_c     = close_shifted.rpow(-1)
@@ -957,7 +961,7 @@ def load_alpha47(close_shifted, high_shifted, volume_shifted,
     val = A - r_vwd
     return val.where(sample == 1)
 
-# ─── Alpha 49 ───────────────────────────────────────────────────────────────
+
 def load_alpha49(close_shifted, sample):
     c    = close_shifted
     c10  = delay(c, 10)
@@ -971,7 +975,7 @@ def load_alpha49(close_shifted, sample):
     val   = val.where(mask1, -1.0 * (c - c1))
     return val.where(sample == 1)
 
-# ─── Alpha 50 ───────────────────────────────────────────────────────────────
+
 def load_alpha50(volume_shifted, vwap_shifted, sample):
     r_vol  = rank(volume_shifted)
     r_vwap = rank(vwap_shifted)
@@ -981,7 +985,7 @@ def load_alpha50(volume_shifted, vwap_shifted, sample):
     val    = -tmax5
     return val.where(sample == 1)
 
-# ─── Alpha 51 ───────────────────────────────────────────────────────────────
+
 def load_alpha51(close_shifted, sample):
     c    = close_shifted
     c10  = delay(c, 10)
@@ -995,7 +999,7 @@ def load_alpha51(close_shifted, sample):
     val  = val.where(mask, -1.0 * (c - c1))
     return val.where(sample == 1)
 
-# ─── Alpha 52 ───────────────────────────────────────────────────────────────
+
 def load_alpha52(low_shifted, logret_shifted, volume_shifted, sample):
     tmin5      = ts_min(low_shifted, 5)
     tmin5_d5   = delay(tmin5, 5)
@@ -1011,7 +1015,7 @@ def load_alpha52(low_shifted, logret_shifted, volume_shifted, sample):
     val        = partA * r_ratio * tr_vol5
     return val.where(sample == 1)
 
-# ─── Alpha 55 ───────────────────────────────────────────────────────────────
+
 def load_alpha55(close_shifted, high_shifted, low_shifted,
                  volume_shifted, sample):
     tmin12     = ts_min(low_shifted, 12)
@@ -1039,7 +1043,7 @@ def load_alpha56(
 
     return alpha56.where(sample == 1)
 
-# ─── Alpha 57 ───────────────────────────────────────────────────────────────
+
 def load_alpha57(close_shifted, vwap_shifted, sample):
     def _argmax(arr: np.ndarray) -> float:
         return float(np.argmax(arr))
@@ -1050,12 +1054,12 @@ def load_alpha57(close_shifted, vwap_shifted, sample):
     val        = -expr
     return val.where(sample == 1)
 
-# ─── Alpha 58 ───────────────────────────────────────────────────────────────
+
 def load_alpha58(vwap_shifted, volume_shifted,
                  sector_aligned_shifted, sample):
-    w_corr  = int(np.floor(3.92795))   # =3
-    w_decay = int(np.floor(7.89291))   # =7
-    w_rank  = int(np.floor(5.50322))   # =5
+    w_corr  = int(np.floor(3.92795))
+    w_decay = int(np.floor(7.89291))
+    w_rank  = int(np.floor(5.50322))
 
     vwap_ind = indneutralize(vwap_shifted, sector_aligned_shifted)
     corr3    = correlation(vwap_ind, volume_shifted, w_corr)
@@ -1064,14 +1068,14 @@ def load_alpha58(vwap_shifted, volume_shifted,
     val      = -rank5
     return val.where(sample == 1)
 
-# ─── Alpha 59 ───────────────────────────────────────────────────────────────
+
 def load_alpha59(vwap_shifted, volume_shifted,
                  industry_aligned_shifted, sample):
-    w_corr  = int(np.floor(4.25197))    # =4
-    w_decay = int(np.floor(16.2289))    # =16
-    w_rank  = int(np.floor(8.19648))    # =8
+    w_corr  = int(np.floor(4.25197))
+    w_decay = int(np.floor(16.2289))
+    w_rank  = int(np.floor(8.19648))
 
-    vwap_mix = vwap_shifted  # since 0.728317 + (1 - 0.728317) = 1
+    vwap_mix = vwap_shifted
     vwap_ind = indneutralize(vwap_mix, industry_aligned_shifted)
     corr4    = correlation(vwap_ind, volume_shifted, w_corr)
     decay16  = decay_linear(corr4, w_decay)
@@ -1079,7 +1083,7 @@ def load_alpha59(vwap_shifted, volume_shifted,
     val      = -rank8
     return val.where(sample == 1)
 
-# ─── Alpha 60 ───────────────────────────────────────────────────────────────
+
 def load_alpha60(close_shifted, high_shifted, low_shifted,
                  volume_shifted, sample):
     num = (close_shifted - low_shifted) - (high_shifted - close_shifted)
@@ -1095,14 +1099,14 @@ def load_alpha60(close_shifted, high_shifted, low_shifted,
     alpha = - (2 * A_s - B_s)
     return alpha.where(sample == 1)
 
-# ─── Alpha 61 ───────────────────────────────────────────────────────────────
+
 def load_alpha61(vwap_shifted, adv180_shifted, sample):
     left   = rank(vwap_shifted - ts_min(vwap_shifted, 16.1219))
     right  = rank(correlation(vwap_shifted, adv180_shifted, 17.9282))
     alpha  = left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 62 ───────────────────────────────────────────────────────────────
+
 def load_alpha62(vwap_shifted, adv20_shifted, open_shifted,
                  high_shifted, low_shifted, sample):
     sum_adv  = ts_sum(adv20_shifted, 22.4101)
@@ -1117,7 +1121,7 @@ def load_alpha62(vwap_shifted, adv20_shifted, open_shifted,
     alpha    = - left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 63 ───────────────────────────────────────────────────────────────
+
 def load_alpha63(vwap_shifted, adv180_shifted, close_shifted,
                  open_shifted, high_shifted, low_shifted,
                  industry_aligned_shifted, sample):
@@ -1135,7 +1139,7 @@ def load_alpha63(vwap_shifted, adv180_shifted, close_shifted,
     alpha    = - (p1 - p2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 64 ───────────────────────────────────────────────────────────────
+
 def load_alpha64(vwap_shifted, adv120_shifted, close_shifted,
                  high_shifted, low_shifted, open_shifted, sample):
     mix1     = open_shifted * 0.178404 + low_shifted * (1 - 0.178404)
@@ -1149,7 +1153,7 @@ def load_alpha64(vwap_shifted, adv120_shifted, close_shifted,
     alpha    = -left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 65 ───────────────────────────────────────────────────────────────
+
 def load_alpha65(vwap_shifted, adv60_shifted, open_shifted, sample):
     sum_adv  = ts_sum(adv60_shifted, 8.6911)
     mix      = open_shifted * 0.00817205 + vwap_shifted * (1 - 0.00817205)
@@ -1158,7 +1162,7 @@ def load_alpha65(vwap_shifted, adv60_shifted, open_shifted, sample):
     alpha    = -left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 66 ───────────────────────────────────────────────────────────────
+
 def load_alpha66(vwap_shifted, high_shifted, low_shifted,
                  open_shifted, sample):
     d1       = delta(vwap_shifted, 3.51013)
@@ -1174,7 +1178,7 @@ def load_alpha66(vwap_shifted, high_shifted, low_shifted,
     alpha    = - (p1 + p2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 67 ───────────────────────────────────────────────────────────────
+
 def load_alpha67(vwap_shifted, adv20_shifted,
                  sector_aligned_shifted, subindustry_aligned_shifted,
                  high_shifted, sample):
@@ -1189,7 +1193,7 @@ def load_alpha67(vwap_shifted, adv20_shifted,
     alpha    = - (left ** right)
     return alpha.where(sample == 1)
 
-# ─── Alpha 68 ───────────────────────────────────────────────────────────────
+
 def load_alpha68(high_shifted, adv15_shifted, close_shifted,
                  low_shifted, sample):
     r_high   = rank(high_shifted)
@@ -1203,7 +1207,7 @@ def load_alpha68(high_shifted, adv15_shifted, close_shifted,
     alpha    = - left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 69 ───────────────────────────────────────────────────────────────
+
 def load_alpha69(vwap_shifted, close_shifted, adv20_shifted,
                  industry_aligned_shifted, sample):
     indn     = indneutralize(vwap_shifted, industry_aligned_shifted)
@@ -1218,7 +1222,7 @@ def load_alpha69(vwap_shifted, close_shifted, adv20_shifted,
     alpha    = - (left ** right)
     return alpha.where(sample == 1)
 
-# ─── Alpha 70 ───────────────────────────────────────────────────────────────
+
 def load_alpha70(vwap_shifted, close_shifted, adv50_shifted,
                  industry_aligned_shifted, sample):
     r1 = rank(delta(vwap_shifted, 1.29456))
@@ -1230,7 +1234,7 @@ def load_alpha70(vwap_shifted, close_shifted, adv50_shifted,
     alpha = -(r1 ** t2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 71 ───────────────────────────────────────────────────────────────
+
 def load_alpha71(close_shifted, adv180_shifted, low_shifted,
                  open_shifted, vwap_shifted, sample):
     t_close  = ts_rank(close_shifted, 3.43976)
@@ -1248,7 +1252,7 @@ def load_alpha71(close_shifted, adv180_shifted, low_shifted,
     alpha    = term1.combine(term2, np.maximum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 72 ───────────────────────────────────────────────────────────────
+
 def load_alpha72(high_shifted, low_shifted, adv40_shifted,
                  vwap_shifted, volume_shifted, sample):
     mid      = (high_shifted + low_shifted) * 0.5
@@ -1265,7 +1269,7 @@ def load_alpha72(high_shifted, low_shifted, adv40_shifted,
     alpha    = num_rank.div(den_rank.replace(0, np.nan))
     return alpha.where(sample == 1)
 
-# ─── Alpha 73 ───────────────────────────────────────────────────────────────
+
 def load_alpha73(vwap_shifted, high_shifted, low_shifted,
                  open_shifted, sample):
     d1      = delta(vwap_shifted, 4.72775)
@@ -1281,7 +1285,7 @@ def load_alpha73(vwap_shifted, high_shifted, low_shifted,
     alpha   = - r1.combine(r2, np.maximum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 74 ───────────────────────────────────────────────────────────────
+
 def load_alpha74(close_shifted, high_shifted, vwap_shifted,
                  volume_shifted, adv30_shifted, sample):
     sum_adv = ts_sum(adv30_shifted, 37.4843)
@@ -1293,7 +1297,7 @@ def load_alpha74(close_shifted, high_shifted, vwap_shifted,
     alpha   = - left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 75 ───────────────────────────────────────────────────────────────
+
 def load_alpha75(vwap_shifted, volume_shifted, low_shifted,
                  adv50_shifted, sample):
     left  = rank(correlation(vwap_shifted, volume_shifted, 4.24304))
@@ -1301,7 +1305,7 @@ def load_alpha75(vwap_shifted, volume_shifted, low_shifted,
     alpha = left.lt(right).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 76 ───────────────────────────────────────────────────────────────
+
 def load_alpha76(vwap_shifted, volume_shifted, low_shifted,
                  adv50_shifted, adv81_shifted,
                  sector_aligned_shifted, sample):
@@ -1323,7 +1327,7 @@ def load_alpha76(vwap_shifted, volume_shifted, low_shifted,
     alpha   = -both
     return alpha.where(sample == 1)
 
-# ─── Alpha 77 ───────────────────────────────────────────────────────────────
+
 def load_alpha77(high_shifted, low_shifted, vwap_shifted,
                  adv40_shifted, sample):
     expr1   = ((high_shifted + low_shifted) * 0.5) - vwap_shifted
@@ -1336,7 +1340,7 @@ def load_alpha77(high_shifted, low_shifted, vwap_shifted,
     alpha   = r1.combine(r2, np.minimum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 78 ───────────────────────────────────────────────────────────────
+
 def load_alpha78(low_shifted, vwap_shifted, volume_shifted,
                  adv40_shifted, sample):
     mix1    = low_shifted * 0.352233 + vwap_shifted * (1 - 0.352233)
@@ -1353,7 +1357,7 @@ def load_alpha78(low_shifted, vwap_shifted, volume_shifted,
     alpha   = r1 ** r2
     return alpha.where(sample == 1)
 
-# ─── Alpha 79 ───────────────────────────────────────────────────────────────
+
 def load_alpha79(close_shifted, open_shifted,
                  sector_aligned_shifted, vwap_shifted,
                  adv150_shifted, sample):
@@ -1369,7 +1373,7 @@ def load_alpha79(close_shifted, open_shifted,
     alpha   = r1.lt(r2).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 80 ───────────────────────────────────────────────────────────────
+
 def load_alpha80(open_shifted, high_shifted, volume_shifted,
                  adv10_shifted, industry_aligned_shifted, sample):
     mix     = open_shifted * 0.868128 + high_shifted * (1 - 0.868128)
@@ -1383,7 +1387,7 @@ def load_alpha80(open_shifted, high_shifted, volume_shifted,
     alpha   = - (r1 ** t2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 81 ───────────────────────────────────────────────────────────────
+
 def load_alpha81(vwap_shifted, volume_shifted, adv10_shifted, sample):
     s_adv10  = ts_sum(adv10_shifted, 49.6054)
     c1       = correlation(vwap_shifted, s_adv10, 8.47743)
@@ -1402,7 +1406,7 @@ def load_alpha81(vwap_shifted, volume_shifted, adv10_shifted, sample):
     alpha    = - r_logp.lt(r2).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 82 ───────────────────────────────────────────────────────────────
+
 def load_alpha82(open_shifted, volume_shifted,
                  sector_aligned_shifted, sample):
     d1       = delta(open_shifted, 1.46063)
@@ -1417,7 +1421,7 @@ def load_alpha82(open_shifted, volume_shifted,
     alpha    = - r1.combine(t2, np.minimum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 83 ───────────────────────────────────────────────────────────────
+
 def load_alpha83(high_shifted, low_shifted, close_shifted,
                  vwap_shifted, volume_shifted, sample):
     mid_range= (high_shifted - low_shifted).div(ts_sum(close_shifted, 5).div(5))
@@ -1432,7 +1436,7 @@ def load_alpha83(high_shifted, low_shifted, close_shifted,
     alpha    = numerator.div(denom.replace(0, np.nan))
     return alpha.where(sample == 1)
 
-# ─── Alpha 84 ───────────────────────────────────────────────────────────────
+
 def load_alpha84(vwap_shifted, close_shifted, sample):
     d1       = vwap_shifted - ts_max(vwap_shifted, 15.3217)
     t1       = ts_rank(d1, 20.7127)
@@ -1440,7 +1444,7 @@ def load_alpha84(vwap_shifted, close_shifted, sample):
     alpha    = signedpower(t1, pwr)
     return alpha.where(sample == 1)
 
-# ─── Alpha 85 ───────────────────────────────────────────────────────────────
+
 def load_alpha85(high_shifted, low_shifted, close_shifted,
                  adv30_shifted, volume_shifted, sample):
     mix1 = high_shifted * 0.876703 + close_shifted * (1 - 0.876703)
@@ -1456,7 +1460,7 @@ def load_alpha85(high_shifted, low_shifted, close_shifted,
     alpha = r1 ** r2
     return alpha.where(sample == 1)
 
-# ─── Alpha 86 ───────────────────────────────────────────────────────────────
+
 def load_alpha86(open_shifted, close_shifted, vwap_shifted,
                  adv20_shifted, sample):
     s_adv    = ts_sum(adv20_shifted, 14.7444)
@@ -1469,7 +1473,7 @@ def load_alpha86(open_shifted, close_shifted, vwap_shifted,
     alpha    = - t1.lt(r2).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 87 ───────────────────────────────────────────────────────────────
+
 def load_alpha87(close_shifted, vwap_shifted, adv81_shifted,
                  industry_aligned_shifted, sample):
     mix1     = close_shifted * 0.369701 + vwap_shifted * (1 - 0.369701)
@@ -1485,7 +1489,7 @@ def load_alpha87(close_shifted, vwap_shifted, adv81_shifted,
     alpha    = - r1.combine(t2, np.maximum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 88 ───────────────────────────────────────────────────────────────
+
 def load_alpha88(open_shifted, high_shifted, low_shifted, close_shifted,
                  adv60_shifted, sample):
     expr1    = rank(open_shifted) + rank(low_shifted) - (rank(high_shifted) + rank(close_shifted))
@@ -1501,7 +1505,7 @@ def load_alpha88(open_shifted, high_shifted, low_shifted, close_shifted,
     alpha    = r1.combine(r2, np.minimum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 89 ───────────────────────────────────────────────────────────────
+
 def load_alpha89(vwap_shifted, close_shifted, low_shifted,
                  adv10_shifted, industry_aligned_shifted, sample):
     low_mix  = low_shifted
@@ -1517,7 +1521,7 @@ def load_alpha89(vwap_shifted, close_shifted, low_shifted,
     alpha    = left - right
     return alpha.where(sample == 1)
 
-# ─── Alpha 90 ───────────────────────────────────────────────────────────────
+
 def load_alpha90(close_shifted, low_shifted, adv40_shifted,
                  subindustry_aligned_shifted, sample):
     left_expr = close_shifted - ts_max(close_shifted, 4.66719)
@@ -1530,7 +1534,7 @@ def load_alpha90(close_shifted, low_shifted, adv40_shifted,
     alpha     = - (left_r ** right_t)
     return alpha.where(sample == 1)
 
-# ─── Alpha 91 ───────────────────────────────────────────────────────────────
+
 def load_alpha91(close_shifted, volume_shifted, vwap_shifted,
                  adv30_shifted, industry_aligned_shifted, sample):
     ind_c    = indneutralize(close_shifted, industry_aligned_shifted)
@@ -1546,7 +1550,7 @@ def load_alpha91(close_shifted, volume_shifted, vwap_shifted,
     alpha    = - (part1 - part2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 92 ───────────────────────────────────────────────────────────────
+
 def load_alpha92(high_shifted, low_shifted, close_shifted,
                  open_shifted, adv30_shifted, sample):
     cond_bool    = ((high_shifted + low_shifted) * 0.5 + close_shifted) < (low_shifted + open_shifted)
@@ -1560,7 +1564,7 @@ def load_alpha92(high_shifted, low_shifted, close_shifted,
     alpha            = part1.combine(part2, np.minimum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 93 ───────────────────────────────────────────────────────────────
+
 def load_alpha93(close_shifted, vwap_shifted, adv81_shifted,
                  industry_aligned_shifted, sample):
     ind_v   = indneutralize(vwap_shifted, industry_aligned_shifted)
@@ -1576,7 +1580,7 @@ def load_alpha93(close_shifted, vwap_shifted, adv81_shifted,
     alpha   = left.div(right.replace(0, np.nan))
     return alpha.where(sample == 1)
 
-# ─── Alpha 94 ───────────────────────────────────────────────────────────────
+
 def load_alpha94(vwap_shifted, adv60_shifted, sample):
     left_expr = vwap_shifted - ts_min(vwap_shifted, 11.5783)
     left_r    = rank(left_expr)
@@ -1589,7 +1593,7 @@ def load_alpha94(vwap_shifted, adv60_shifted, sample):
     alpha      = - (left_r ** right_t)
     return alpha.where(sample == 1)
 
-# ─── Alpha 95 ───────────────────────────────────────────────────────────────
+
 def load_alpha95(open_shifted, high_shifted, low_shifted,
                  adv40_shifted, sample):
     left_expr = open_shifted - ts_min(open_shifted, 12.4105)
@@ -1605,7 +1609,7 @@ def load_alpha95(open_shifted, high_shifted, low_shifted,
     alpha     = left_r.lt(right_t).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 96 ───────────────────────────────────────────────────────────────
+
 def load_alpha96(close_shifted, low_shifted, high_shifted,
                  volume_shifted, adv60_shifted, vwap_shifted, sample):
     c1     = correlation(rank(vwap_shifted), rank(volume_shifted), 3.83878)
@@ -1622,7 +1626,7 @@ def load_alpha96(close_shifted, low_shifted, high_shifted,
     alpha  = - part1.combine(part2, np.maximum)
     return alpha.where(sample == 1)
 
-# ─── Alpha 97 ───────────────────────────────────────────────────────────────
+
 def load_alpha97(low_shifted, vwap_shifted, adv60_shifted,
                  industry_aligned_shifted, sample):
     mix1     = low_shifted * 0.721001 + vwap_shifted * (1 - 0.721001)
@@ -1641,7 +1645,7 @@ def load_alpha97(low_shifted, vwap_shifted, adv60_shifted,
     alpha    = - (p1 - p2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 98 ───────────────────────────────────────────────────────────────
+
 def load_alpha98(open_shifted, vwap_shifted, adv5_shifted,
                  adv15_shifted, sample):
     s1   = ts_sum(adv5_shifted, 26.4719)
@@ -1660,7 +1664,7 @@ def load_alpha98(open_shifted, vwap_shifted, adv5_shifted,
     alpha  = p1 - p2
     return alpha.where(sample == 1)
 
-# ─── Alpha 99 ───────────────────────────────────────────────────────────────
+
 def load_alpha99(high_shifted, low_shifted, volume_shifted,
                  adv60_shifted, sample):
     s1       = ts_sum((high_shifted + low_shifted) * 0.5, 19.8975)
@@ -1674,7 +1678,7 @@ def load_alpha99(high_shifted, low_shifted, volume_shifted,
     alpha    = - left_r.lt(right_r).astype(float)
     return alpha.where(sample == 1)
 
-# ─── Alpha 100 ──────────────────────────────────────────────────────────────
+
 def load_alpha100(close_shifted, low_shifted, high_shifted,
                   volume_shifted, adv20_shifted,
                   subindustry_aligned_shifted, sample):
@@ -1697,15 +1701,12 @@ def load_alpha100(close_shifted, low_shifted, high_shifted,
     alpha  = - (partA * ratio2)
     return alpha.where(sample == 1)
 
-# ─── Alpha 101 ──────────────────────────────────────────────────────────────
+
 def load_alpha101(open_shifted, high_shifted, low_shifted,
                   close_shifted, sample):
     alpha = (close_shifted - open_shifted).div((high_shifted - low_shifted) + 0.001)
     return alpha.where(sample == 1)
 
-
-
-'''Delay-0 Alphas'''
 
 def load_alpha42_d0(amount: pd.DataFrame,
                     volume: pd.DataFrame,
@@ -1721,17 +1722,17 @@ def load_alpha48_d0(close: pd.DataFrame,
                     subindustry_aligned: pd.DataFrame,
                     sample: pd.DataFrame
                    ) -> pd.DataFrame:
-    # 1）计算一阶差分和滞后差分
+
     delta_c      = delta(close, 1)
     delta_c_lag1 = delta(delay(close, 1), 1)
-    # 2）250 日相关
+
     corr_250     = correlation(delta_c, delta_c_lag1, 250)
 
-    # 3）构造 top_raw，并用新的 subindustry_aligned 做中性化
+
     top_raw      = corr_250.mul(delta_c).div(close)
     top_adj      = indneutralize(top_raw, subindustry_aligned)
 
-    # 4）分母部分不变
+
     denom        = ts_sum((delta_c.div(delay(close, 1)))**2, 250)
     raw          = top_adj.div(denom.replace(0, np.nan))
 
@@ -1760,9 +1761,6 @@ def load_alpha54_d0(open_price: pd.DataFrame,
     return raw.where(sample == 1)
 
 
-
-''' IC Info'''
-
 def compute_ic_series(
         alpha_df: pd.DataFrame,
         logret_df: pd.DataFrame,
@@ -1772,14 +1770,14 @@ def compute_ic_series(
     """
     Same docstring as before …
     """
-    # 1) 对齐列（股票代码）
+
     alpha_df, logret_df = alpha_df.align(logret_df, join='inner', axis=1)
     alpha_df, sample_df = alpha_df.align(sample_df, join='inner', axis=1)
 
-    # 2) r_{t+1}
+
     ret_next = logret_df.shift(-1)
 
-    # 3) 日期交集 + 排序
+
     dates = alpha_df.index.intersection(ret_next.index).sort_values()
 
     ic_vals = []
@@ -1844,19 +1842,14 @@ def compute_ic_all(
     return ic_df, rank_ic_df, summary_df
 
 
-
-
-
-'''Hypothesis Testing'''
-
 def hac_se_vectorized(df: pd.DataFrame, maxlags: int = 5) -> pd.Series:
     X = df.to_numpy()
     T, K = X.shape
-    n_obs = np.sum(~np.isnan(X), axis=0).astype(float)  # 有效样本数 (K,)
+    n_obs = np.sum(~np.isnan(X), axis=0).astype(float)
 
     L = min(maxlags, int(np.nanmax(n_obs))-1)
-    mu = np.nanmean(X, axis=0)                         # (K,)
-    E  = X - mu                                         # (T, K)
+    mu = np.nanmean(X, axis=0)
+    E  = X - mu
 
     gamma0 = np.nanmean(E*E, axis=0)
 
@@ -1864,8 +1857,8 @@ def hac_se_vectorized(df: pd.DataFrame, maxlags: int = 5) -> pd.Series:
     for l in range(1, L+1):
         cov_l = np.nanmean(E[l:]*E[:-l], axis=0)
         weight = 1 - l/(L+1)
-        n_eff  = np.maximum(n_obs - l, 1)               # 防 0
-        sum_term += 2*weight*cov_l*n_obs/n_eff          # Small-sample 修正
+        n_eff  = np.maximum(n_obs - l, 1)
+        sum_term += 2*weight*cov_l*n_obs/n_eff
 
     var_mean = (gamma0 + sum_term) / n_obs
     var_mean = np.clip(var_mean, 0, None)
@@ -1883,12 +1876,12 @@ def alpha_significance(df: pd.DataFrame, alpha_lv=[0.05],
     dfree  = n_obs - 1
     t_stat = (means - nulls) / ses
 
-    # 单侧 P-value
+
     right_tail = (sign > 0)
     p_val = np.where(right_tail, 1 - t.cdf(t_stat, dfree),
                                  t.cdf(t_stat, dfree))
 
-    # 置信区间
+
     tcrit = t.ppf(ci_level, dfree)
     ci_lower = np.where(right_tail, means - tcrit*ses, np.nan)
     ci_upper = np.where(~right_tail, means + tcrit*ses, np.nan)
@@ -1933,7 +1926,6 @@ def filter_df(df):
     return df[same_direction & (pos_mask | neg_mask)]
 
 
-# ---------- 6. 原始方向统计 ----------
 def attach_orig_stats(row):
     src = (orig_mean_ic_d1, orig_mean_ric_d1, 'd1') if row['delay']=='d1' \
           else (orig_mean_ic_d0, orig_mean_ric_d0, 'd0')
@@ -1954,12 +1946,12 @@ def plot_alpha_corr_by_list(
     corr_method: str = "pearson"
 ) -> None:
     """
-    直接用 alpha_list（列表）画相关热力图。
+    Plot a heatmap directly from a list of alpha names.
     """
-    # 1. 用 alpha_list 作为 names
+
     names = alpha_list
 
-    # 2–5 同前
+
     series_dict = {}
     for name in names:
         df = alpha_dict[name]
@@ -1986,7 +1978,7 @@ def get_alpha_corr_matrix_by_list(
     corr_method: str = "pearson"
 ) -> pd.DataFrame:
     """
-    直接用 alpha_list（列表）返回相关系数矩阵。
+    Return the alpha correlation matrix directly from a list of alpha names.
     """
     names = alpha_list
     series_dict = {}
@@ -2000,7 +1992,6 @@ def get_alpha_corr_matrix_by_list(
     return combined.corr(method=corr_method)
 
 
-
 def fama_macbeth_with_p(final_alphas: pd.DataFrame,
                         alpha_dict: dict[str, pd.DataFrame],
                         logret: pd.DataFrame,
@@ -2010,25 +2001,26 @@ def fama_macbeth_with_p(final_alphas: pd.DataFrame,
                         acf_lags: int = 5,
                         alpha: float = 0.05) -> pd.DataFrame:
     """
-    Fama–MacBeth 两步 + ACF/PACF 自相关检验自动选用普通或 HAC 标准误，
-    并打印每个系数的检验方法决策报告（不绘图）。
+    Run two-step Fama-MacBeth regression.
+    Use ACF/PACF diagnostics to choose IID or HAC standard errors automatically,
+    and print the method selected for each coefficient.
 
-    新增参数：
-      - alpha: float, 双尾检验显著性水平（例如 0.10 对应 90% 置信区间，默认 0.05=95%）
+    Parameters:
+      - alpha: two-sided significance level, e.g. 0.10 for 90% confidence.
     """
     names = final_alphas["alpha"].tolist()
 
-    # 1）构造次期收益
+
     ret_next = logret.shift(-shift)
     if shift > 0:
         ret_next = ret_next.iloc[:-shift]
 
-    # 2）取公共日期
+
     dates = ret_next.index
     for n in names:
         dates = dates.intersection(alpha_dict[n].index)
 
-    # 3）逐期横截面回归，收集 β_t
+
     betas_ts = []
     for date in dates:
         X_df = pd.DataFrame({n: alpha_dict[n].loc[date] for n in names})
@@ -2038,7 +2030,7 @@ def fama_macbeth_with_p(final_alphas: pd.DataFrame,
         if N_obs == 0:
             continue
 
-        # 剔除零方差因子
+
         fac_std = df[names].std(axis=0)
         valid   = fac_std[fac_std>0].index.tolist()
         p_req   = len(valid) + (1 if add_const else 0)
@@ -2073,15 +2065,15 @@ def fama_macbeth_with_p(final_alphas: pd.DataFrame,
     if betas_df.empty:
         raise ValueError("No valid cross‐sections for regression.")
 
-    # 4）平均系数 & 期数
+
     T_k       = betas_df.count()
     beta_mean = betas_df.mean(skipna=True)
 
-    # 5）准备两种标准误
+
     se_iid = betas_df.std(ddof=1) / np.sqrt(T_k)
     se_hac = hac_se_vectorized(betas_df, maxlags=acf_lags)
 
-    # 6）因子级 ACF/PACF 检验 → 选择 se
+
     se_final   = pd.Series(index=beta_mean.index, dtype=float)
     method_map = {}
     for j in beta_mean.index:
@@ -2098,7 +2090,7 @@ def fama_macbeth_with_p(final_alphas: pd.DataFrame,
             se_final[j]   = se_iid[j]
             method_map[j] = "IID"
 
-    # 7）t 统计量与双尾 p-value
+
     t_stat       = beta_mean / se_final
     df_res       = pd.DataFrame({
         "beta":   beta_mean,
@@ -2109,25 +2101,18 @@ def fama_macbeth_with_p(final_alphas: pd.DataFrame,
     df_res["df"]      = df_res["T_k"] - 1
     df_res["p_value"] = 2 * (1 - t.cdf(np.abs(df_res["t_stat"]), df_res["df"]))
 
-    # 8）显著性判定，列名依据置信度自动命名
+
     ci = int((1 - alpha) * 100)
     sig_col = f"sig_{ci}%"
     df_res[sig_col]    = df_res["p_value"] < alpha
 
-    # 9）打印方法报告与显著性水平
-    print(f"—— 自相关检验方法选择 ——")
+
+    print("Autocorrelation test method selection")
     print(pd.Series(method_map).to_frame("method"))
-    print(f"—— 双尾显著性水平 alpha = {alpha:.2%} (置信度 {ci}%) ——")
+    print(f"Two-sided significance level alpha = {alpha:.2%} (confidence {ci}%)")
 
     return df_res
 
-
-
-
-
-
-        
-'''Key Operators'''
 
 open_price     = load_open_price()
 high           = load_high_price()
@@ -2141,8 +2126,6 @@ market_cap_float = load_market_cap_float()
 zz1000         = load_zz1000_index()
 
 
-
-
 div      = load_dividend(close_price=close)
 bonus    = load_bonus(close_price=close)
 split    = load_split(close_price=close)
@@ -2152,8 +2135,6 @@ list_flag= load_list_flag(close)
 sample   = load_sample_space(amt_flag, list_flag)
 
 
-
-# Raw data (shift once globally)
 open_shifted        = open_price.shift(1)
 high_shifted        = high.shift(1)
 close_shifted       = close.shift(1)
@@ -2163,7 +2144,7 @@ amount_shifted      = amount.shift(1)
 turnover_shifted    = turnover.shift(1)
 market_cap_shifted  = market_cap.shift(1)
 
-# Derived features (also shift once)
+
 div_shifted      = div.shift(1)
 bonus_shifted    = bonus.shift(1)
 split_shifted    = split.shift(1)
@@ -2172,8 +2153,8 @@ logret_shifted   = logret.shift(1)
 
 stock_sector_df = load_stock_sector_table(CONN)
 industry_code_df = build_industry_code_df(stock_sector_df,start_date=None,end_date=None)
-mapping_file_path = r"C:\Users\19874\OneDrive\桌面\九坤投资实习\申万分类\SwClassCode_2021.xls"
-mapping_df = load_mapping_df(mapping_file_path,code_col="行业代码", level1_col="一级行业名称", level2_col="二级行业名称", level3_col="三级行业名称")
+mapping_file_path = SW_CLASSCODE_PATH
+mapping_df = load_mapping_df(mapping_file_path)
 
 sector_df, industry_df, subindustry_df = build_sector_and_industry_dfs(industry_code_df,mapping_df)
 
@@ -2196,9 +2177,6 @@ plt.tight_layout()
 plt.show()
 
 
-sector_aligned.loc['2023-01-03':'2025-06-13',:]
-
-
 adv5_shifted   = volume.rolling(window=5,   min_periods=5).mean().shift(1)
 adv10_shifted  = volume.rolling(window=10,  min_periods=10).mean().shift(1)
 adv15_shifted  = volume.rolling(window=15,  min_periods=15).mean().shift(1)
@@ -2215,13 +2193,9 @@ adv180_shifted = volume.rolling(window=180, min_periods=180).mean().shift(1)
 vwap_shifted = amount.div(volume).replace([np.inf, -np.inf], np.nan).shift(1)
 
 
-
 pd.reset_option("all")
 
 
-
-
-# ── Delay-1 Alphas ─────────────────────────────────────────────────────────
 alpha_1   = load_alpha1( sl(close_shifted), sl(logret_shifted),      sl(sample) )
 alpha_2   = load_alpha2( sl(close_shifted), sl(open_shifted), sl(volume_shifted), sl(sample) )
 alpha_3   = load_alpha3( sl(open_shifted),  sl(volume_shifted),        sl(sample) )
@@ -2320,7 +2294,7 @@ alpha_99  = load_alpha99(sl(high_shifted), sl(low_shifted), sl(volume_shifted), 
 alpha_100 = load_alpha100(sl(close_shifted), sl(low_shifted), sl(high_shifted), sl(volume_shifted), sl(adv20_shifted), sl(subindustry_aligned_shifted), sl(sample))
 alpha_101 = load_alpha101(sl(open_shifted), sl(high_shifted), sl(low_shifted), sl(close_shifted), sl(sample))
 
-# ── Delay-0 Alphas ─────────────────────────────────────────────────────────
+
 alpha_42 = load_alpha42_d0( sl(amount), sl(volume), sl(close), sl(sample) )
 alpha_48 = load_alpha48_d0( sl(close), sl(subindustry_aligned), sl(sample) )
 alpha_53 = load_alpha53_d0( sl(close), sl(high), sl(low), sl(sample) )
@@ -2430,7 +2404,7 @@ ic_matrix, rank_ic_matrix, ic_summary = compute_ic_all(
     sample_df = sample,
 )
 
-# Delay-0 alphas: same pattern
+
 ic_matrix_d0, rank_ic_matrix_d0, ic_summary_d0 = compute_ic_all(
     alphas = {
         "alpha_42": alpha_42,
@@ -2443,43 +2417,33 @@ ic_matrix_d0, rank_ic_matrix_d0, ic_summary_d0 = compute_ic_all(
 )
 
 
-
-
-''' 假设检验过程（已自动返回单侧 CI 下界，无需额外提取）'''
-
-
-# ——— 0. 计算原始 mean_ic, mean_ric ———
 orig_mean_ic_d1    = ic_matrix.mean(axis=0)
 orig_mean_ric_d1   = rank_ic_matrix.mean(axis=0)
 orig_mean_ic_d0    = ic_matrix_d0.mean(axis=0)
 orig_mean_ric_d0   = rank_ic_matrix_d0.mean(axis=0)
 
 
-
-# ========= 可调参数 =========
 alpha_levels     = [0.05]
-ci_level         = 0.95       # 单侧置信水平
+ci_level         = 0.95
 
-# 正向检验  H0: μ ≤ pos_null_mean
+
 pos_null_mean    = 0.0
-# 反向检验  H0: μ ≥ neg_null_mean
+
 neg_null_mean    = 0.0
 
-# 经济显著性阈值
-ic_thresh_pos   = 0.001   # IC   正向阈值
-ric_thresh_pos  = 0.001   # Rank 正向阈值
-ic_thresh_neg   = -0.001  # IC   反向阈值
-ric_thresh_neg  = -0.001  # Rank 反向阈值
+
+ic_thresh_pos   = 0.001
+ric_thresh_pos  = 0.001
+ic_thresh_neg   = -0.001
+ric_thresh_neg  = -0.001
 
 
-
-# ---------- 2. 直接对原始矩阵做检验 ----------
 ic_hptest         = alpha_significance(ic_matrix,       alpha_levels, pos_null_mean, neg_null_mean, ci_level)
 rank_ic_hptest    = alpha_significance(rank_ic_matrix,  alpha_levels, pos_null_mean, neg_null_mean, ci_level)
 ic_hptest_d0      = alpha_significance(ic_matrix_d0,    alpha_levels, pos_null_mean, neg_null_mean, ci_level)
 rank_ic_hptest_d0 = alpha_significance(rank_ic_matrix_d0,alpha_levels,pos_null_mean, neg_null_mean, ci_level)
 
-# ---------- 3. 合并 ----------
+
 d1 = ic_hptest.merge(rank_ic_hptest, left_index=True, right_index=True, suffixes=('_ic','_ric'))
 d0 = ic_hptest_d0.merge(rank_ic_hptest_d0, left_index=True, right_index=True, suffixes=('_ic','_ric'))
 
@@ -2487,7 +2451,7 @@ d0 = ic_hptest_d0.merge(rank_ic_hptest_d0, left_index=True, right_index=True, su
 d1_filtered = filter_df(d1).assign(delay='d1')
 d0_filtered = filter_df(d0).assign(delay='d0')
 
-# ---------- 5. 合并 ----------
+
 final = (pd.concat([d1_filtered, d0_filtered])
            .reset_index().rename(columns={'index':'alpha'}))
 final_alphas = pd.concat(
@@ -2498,29 +2462,21 @@ final_alphas = pd.concat(
 print(final)
 
 
-
-
-
-
-# ---------- 7. 输出 ----------
 pd.set_option('display.max_columns', None, 'display.width', 150, 'display.max_colwidth', None)
 print(final_alphas.sort_values('abs_orig_mean_ic', ascending=False))
 print(final_alphas)
 
 
-# 1. 构造一个 name → DataFrame 的映射
 names = final_alphas["alpha"].tolist()
 alpha_dict = {name: globals()[name] for name in names}
 
-#设立显著性 0.05， 或者其它
+
 fm_alpha = 0.10
 fama_macbeth_results = fama_macbeth_with_p(final_alphas, alpha_dict, logret,
                               shift=1, add_const=True, ridge=0.0, acf_lags=5, alpha=fm_alpha)
 
 print(fama_macbeth_results.sort_values('t_stat', ascending = False))
 
-
-# 如果你只想看显著的因子：
 
 fm_ci = int((1 - fm_alpha)*100)
 sig_col = f"sig_{fm_ci}%"
@@ -2530,50 +2486,30 @@ D0_ALPHAS = {"alpha_42", "alpha_48", "alpha_53", "alpha_54"}
 alpha_ic = final_alphas.set_index('alpha')['orig_mean_ic']
 sig_factors = [a for a in sig_factors if a not in D0_ALPHAS and abs(alpha_ic.loc[a]) >= 0.005]
 
-print(f"筛选后 {sig_col} 双尾显著且 |IC|>=0.005 的 Alphas:", sig_factors)
+print(f"Filtered alphas with {sig_col} two-sided significance and |IC| >= 0.005:", sig_factors)
 print(alpha_ic.loc[sig_factors])
 
-# 画 Pearson 相关的热力图
+
 plot_alpha_corr_by_list(sig_factors, alpha_dict, corr_method="pearson")
 corr_matrix = get_alpha_corr_matrix_by_list(sig_factors, alpha_dict, corr_method="pearson")
 print(corr_matrix)
 
 
-
-
-
-
-
-
-
-
-
-'''Back Testing'''
-
-
-
-
-'''EGARCH & HMM Model'''
-
-
 start_test  = (pd.to_datetime(end_train) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 end_test    = "2025-06-13"
-# 裁剪 log-return
+
 upper, lower   = np.log(2), np.log(0.5)
 logret_clipped = logret.where((logret > lower) & (logret < upper))
 
 
-
 EPS = 1e-8
 
-# 1) 拟合 EGARCH 参数部分（不变）
-# =============================================================================
-# 1) EGARCH parameter fitting (unchanged)
+
 def _fit_one(col, series, p, o, q, dist):
     if series.size < (p + o + q + 10):
         return col, None
 
-    # 构造模型，关闭内部自动缩放
+
     am = arch_model(
         series,
         mean="Zero",
@@ -2583,25 +2519,25 @@ def _fit_one(col, series, p, o, q, dist):
         rescale=False
     )
 
-    # 优先用默认 L-BFGS 进行快速拟合
+
     try:
         res = am.fit(
             disp="off",
             show_warning=False,
-            tol=1e-4,            # 较宽松的收敛公差，加快速度
-            options={"maxiter": 200}  # 最多迭代 200 步
+            tol=1e-4,
+            options={"maxiter": 200}
         )
     except Exception:
-        # 若默认方法失败，则改用 Nelder–Mead 保底
+
         res = am.fit(
             disp="off",
             show_warning=False,
-            solver="nm",         # Nelder–Mead，无导数更稳
-            tol=1e-6,            # 更严格的收敛
+            solver="nm",
+            tol=1e-6,
             options={"maxiter": 500}
         )
 
-    # 返回参数字典
+
     return col, {k: float(v) for k, v in res.params.items()}
 
 def fit_egarch_params_parallel(logret_df, p, o, q, dist, n_jobs):
@@ -2620,7 +2556,7 @@ def filter_extreme(params, alpha_max=1.5, gamma_max=1.5, beta_max=0.90):
         and p["beta[1]"] < beta_max
     }
 
-# 2) ω recalibration & vectorization (unchanged)
+
 def _const_for_dist(nu: float | None) -> float:
     if nu is None or nu <= 2.0 or nu > 1e5:
         return math.sqrt(2.0 / math.pi)
@@ -2655,7 +2591,7 @@ def _params_to_vec(params, symbols, beta_max=0.9):
 
     return omega_arr, alpha_arr, beta_arr, gamma_arr, const_arr
 
-# 3) Revised Numba forward kernel
+
 @njit
 def _egarch_forward_numba(
     ret_mat, reest_idx,
@@ -2664,19 +2600,19 @@ def _egarch_forward_numba(
 ):
     N, K = ret_mat.shape
     mv = np.empty(N, dtype=np.float64)
-    mv[:] = np.nan  # Modified: initialize all to NaN
+    mv[:] = np.nan
 
     prev_s2 = np.empty(K, dtype=np.float64)
     prev_e  = np.zeros(K, dtype=np.float64)
 
-    # 1) warm-start unconditional variance
+
     for k in range(K):
         unc = omega_arr[0, k] / (1.0 - beta_arr[0, k])
         if unc < ln_low:    unc = ln_low
         elif unc > ln_high: unc = ln_high
         prev_s2[k] = math.exp(unc)
 
-    # 2) segmented recursion
+
     S = omega_arr.shape[0]
     for seg in range(S):
         start, end = reest_idx[seg], reest_idx[seg + 1]
@@ -2688,7 +2624,7 @@ def _egarch_forward_numba(
         for t in range(start, end):
             for k in range(K):
                 ret = ret_mat[t, k]
-                if math.isnan(ret):  # Modified: skip NaN and clear residual
+                if math.isnan(ret):
                     prev_e[k] = 0.0
                     continue
 
@@ -2707,7 +2643,7 @@ def _egarch_forward_numba(
                 s2 = math.exp(ln_s2)
                 prev_s2[k], prev_e[k] = s2, ret
 
-            # compute market volatility
+
             s_sum, cnt = 0.0, 0
             for k in range(K):
                 if not math.isnan(prev_s2[k]):
@@ -2717,20 +2653,20 @@ def _egarch_forward_numba(
 
     return mv
 
-# 4) Revised rolling EGARCH function
+
 def rolling_egarch_vol(
     logret: pd.DataFrame,
     p=1, o=1, q=1, dist="t",
     window=252, reest_freq=21,
     n_jobs=-1
 ) -> pd.Series:
-    # Modified: keep NaN in clipped returns
+
     logret_clipped = logret.where((logret > np.log(0.5)) & (logret < np.log(2)))
 
     dates = logret_clipped.index
     N     = len(dates)
 
-    # initial fit using days 0…window-1
+
     params0 = filter_extreme(
         fit_egarch_params_parallel(
             logret_clipped.iloc[:window], p, o, q, dist, n_jobs
@@ -2738,7 +2674,7 @@ def rolling_egarch_vol(
     )
     keep = list(params0.keys())
 
-    # Modified: start first segment at t=0
+
     reest_pts = [0] + list(range(window, N, reest_freq))
     reest_pts.append(N)
 
@@ -2773,10 +2709,10 @@ def rolling_egarch_vol(
         ln_low=-14, ln_high=-2
     )
 
-    # ensure non-negative
+
     return pd.Series(mv_arr, index=dates).clip(lower=0.0)
 
-# 5) HMM prediction (unchanged)
+
 def _one_step_pred_prob(model, X):
     gamma = model.predict_proba(X)
     return (gamma[-1] @ model.transmat_) / gamma[-1].sum()
@@ -2807,7 +2743,6 @@ def rolling_hmm_probabilities(
     cols = [f"prob_{l}" for l in ["low","mid","high"][:n_components]]
     return pd.DataFrame(np.vstack(out), index=dates, columns=cols)
 
-# ===== Invocation, printing, plotting (unchanged) =====
 
 upper, lower = np.log(1.5), np.log(0.6)
 logret_clipped = logret.where((logret > lower) & (logret < upper))
@@ -2830,11 +2765,10 @@ prob_matrix = rolling_hmm_probabilities(
     n_jobs         = -1
 )
 
-print("HMM 概率矩阵统计：")
+print("HMM probability matrix summary:")
 print(prob_matrix.describe())
-print("\n尾部几行：")
+print("\nLast few rows:")
 print(prob_matrix.tail())
-
 
 
 plt.figure(figsize=(10,4))
@@ -2862,37 +2796,6 @@ counts = {
 print(counts)
 
 
-
-
-
-
-
-
-ic_summary.sort_values('ic_ir', ascending = False)
-
-
-
-
-
-
-
-
-
-
-''' Back Testing Implementation'''
-
-
-
-
-"""
-Dual-Leg Softmax Back-tester
-包含所有依赖函数：build_factor_dict、权重计算、_bt_loop、画图打印
-数学模型为 HMM 三状态资金拆分 + 波动率分层 + Softmax 双腿选股，
-交易/NAV/资金逻辑完全沿用原版 _bt_loop。
-"""
-
-
-# ============== 全局可调参数 ==============
 PARAMS = dict(
     w_L=0.20, w_M=0.30, w_H=0.50,
     alpha_z=1.0, z_up=1.8, z_dn=-0.1,
@@ -2908,49 +2811,35 @@ PARAMS = dict(
 )
 
 
-
-
-
-
-'''Note: alpha_vol is locked in the calculation
-run compute_vol_proxy function and vol_proxy_sub before backtesting'''
-
-
-
-
-
-
-# ============== 交易常数 ==============
 INIT_CASH = 1e8
 LOT       = 100
 C_COMM    = 0.0003
 C_IMP     = 0.0002
 C_STAMP   = 0.0005
-UP_20     = {"688","689","300","301"}  # 20% 涨跌停板标的
+UP_20     = {"688","689","300","301"}
 
-# ------------------------------------------------------------------------
-# 1. 因子构建：build_factor_dict
-# ------------------------------------------------------------------------
+
 def build_factor_dict(alpha_names: list[str],
                       start: str, end: str,
                       dates: pd.Index | None = None) -> dict:
     """
-    遍历 alpha_names，在 [start:end] 区间调用 load_<alpha> 或 load_<alpha>_d0；
-    若提供 dates，则 reindex→ffill→bfill 保证无全 NaN 行。
+    Iterate over alpha_names and call either load_<alpha> or load_<alpha>_d0
+    in the [start:end] interval. If dates is provided, apply
+    reindex -> ffill -> bfill to avoid all-NaN rows.
     """
     out: dict = {}
     for name in alpha_names:
         base = name.replace("_", "")
         func_name = f"load_{base}_d0" if name in D0_ALPHAS else f"load_{base}"
         if func_name not in globals():
-            raise NameError(f"未找到因子计算函数 {func_name}")
+            raise NameError(f"Factor loader function not found: {func_name}")
         func = globals()[func_name]
 
         sig = inspect.signature(func)
         args = []
         for p in sig.parameters.values():
             if p.name not in globals():
-                raise NameError(f"{func_name} 缺少全局变量 {p.name}")
+                raise NameError(f"{func_name} requires missing global variable: {p.name}")
             val = globals()[p.name]
             args.append(val.loc[start:end] if isinstance(val, pd.DataFrame) else val)
 
@@ -2960,16 +2849,14 @@ def build_factor_dict(alpha_names: list[str],
         out[name] = fac
     return out
 
-# ------------------------------------------------------------------------
-# 2. 波动代理 & 工具函数
-# ------------------------------------------------------------------------
+
 def _uplim_rate(code: str) -> float:
     bare = code[2:] if code.startswith(("sh", "sz")) else code
     return 0.20 if any(bare.startswith(p) for p in UP_20) else 0.10
 
 def compute_vol_proxy(logret_df: pd.DataFrame) -> pd.DataFrame:
     """
-    EWMA 波动代理：vp[t] = α * |r_t| + (1-α) * vp[t-1]
+    EWMA volatility proxy: vp[t] = alpha * |r_t| + (1-alpha) * vp[t-1].
     """
     ret = logret_df.to_numpy(dtype=float)
     T, N = ret.shape
@@ -2987,18 +2874,16 @@ def _softmax_vec(v: np.ndarray, g: float) -> np.ndarray:
     ex = np.exp(g * (v - v.max()))
     return ex / ex.sum() if ex.sum() > 0 else np.full_like(ex, 1 / len(ex))
 
-# ------------------------------------------------------------------------
-# 3. 双腿权重：build_dualleg_weights
-# ------------------------------------------------------------------------
+
 def build_dualleg_weights(
     dates: pd.Index, stocks: pd.Index,
     S_pos: np.ndarray, price_ok: np.ndarray,
     vol_proxy: pd.DataFrame, prob_df: pd.DataFrame
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    输出：W_pos, leg_flag, exit_flag
+    Returns: W_pos, leg_flag, exit_flag
       leg_flag: 0=HF, 1=LF
-      exit_flag: LF z<阈值 强制出场
+      exit_flag: force LF exit when z is below threshold
     """
     T, N = S_pos.shape
     total = PARAMS['w_L'] + PARAMS['w_M'] + PARAMS['w_H']
@@ -3019,7 +2904,7 @@ def build_dualleg_weights(
         U_low  = [i for i in range(N) if vp_row[i] <= med_v and price_ok[t, i] == 1]
         U_high = [i for i in range(N) if vp_row[i] >  med_v and price_ok[t, i] == 1]
 
-        # — HF 腿 —
+
         nh = max(1, int(len(U_low) * PARAMS['top_pct_HF']))
         hf_cand = sorted(U_low, key=lambda i: -S_pos[t, i])[:nh]
         if hf_cand:
@@ -3028,7 +2913,7 @@ def build_dualleg_weights(
                 W_pos[t, i]    += hf_share * w_hf[k]
                 leg_flag[t, i] = 0
 
-        # — LF 腿 —
+
         nl = max(PARAMS['min_lf_pick'], int(len(U_high) * PARAMS['top_pct_LF']))
         lf_cand = sorted(U_high, key=lambda i: -S_pos[t, i])[:nl]
         if lf_cand:
@@ -3050,9 +2935,7 @@ def build_dualleg_weights(
 
     return W_pos, leg_flag, exit_flag
 
-# ------------------------------------------------------------------------
-# 4. 回测核心：_bt_loop（含 HF 平仓 & 涨跌停撮合）
-# ------------------------------------------------------------------------
+
 @nb.njit(cache=True, fastmath=True)
 def _bt_loop(
     price: np.ndarray,
@@ -3099,10 +2982,10 @@ def _bt_loop(
     block_until     = -1
     pending_exit    = np.zeros(N, dtype=np.uint8)
 
-    entry_leg       = -np.ones(N, dtype=np.int8)  # 记录下单时腿类型
+    entry_leg       = -np.ones(N, dtype=np.int8)
 
     for t in range(T-1):
-        # 1) 组合回撤风控
+
         prev_nav = cash + np.dot(pos, price[t-1]) if t>0 else INIT_CASH
         if prev_nav > NAV_peak:
             NAV_peak = prev_nav
@@ -3116,25 +2999,25 @@ def _bt_loop(
         if drawdown_active and prev_nav >= NAV_peak:
             drawdown_active = False
 
-        # 2) 个股层面平仓信号
+
         if t > 0:
             for i in range(N):
                 if pos[i] > 0:
-                    # HF T+1 必卖（基于 entry_leg）
+
                     if entry_leg[i] == 0 and (t - entry_day[i] >= 1):
                         pending_exit[i] = 1
-                    # LF 超持仓天数卖
+
                     if entry_leg[i] == 1 and (t - entry_day[i] >= max_hold):
                         pending_exit[i] = 1
-                    # LF z<阈值卖
+
                     if exit_flag_mat[t, i] == 1:
                         pending_exit[i] = 1
-                    # 止盈/止损
+
                     ret_i = (price[t-1, i] - entry_price[i]) / entry_price[i]
                     if ret_i <= -stop_loss_pct or ret_i >= take_profit_pct:
                         pending_exit[i] = 1
 
-        # 3) 卖出撮合：考虑跌停 & 交易日限制
+
         proceeds, sc, fs = 0.0, 0, 0
         for i in range(N):
             if pos[i] > 0 and pending_exit[i]:
@@ -3156,12 +3039,12 @@ def _bt_loop(
         sell_flow[t], sell_count[t], fail_sell_count[t] = proceeds, sc, fs
         cash += proceeds
 
-        # 4) 冷却期内跳过买入
+
         if t <= block_until:
             nav[t] = cash + np.dot(pos, price[t])
             continue
 
-        # 5) 买入撮合：考虑涨停 & 延迟天数
+
         cash_left, bc, fb = cash, 0, 0
         samp = sample_day[t]
         if np.all(samp == 0):
@@ -3175,7 +3058,7 @@ def _bt_loop(
                 order_w[cnt] = W[t, i]
                 cnt += 1
 
-        # 权重降序排序
+
         for a in range(cnt):
             mx = a
             for b in range(a+1, cnt):
@@ -3214,14 +3097,14 @@ def _bt_loop(
             pos[i]         += lots * LOT
             entry_day[i]    = t
             entry_price[i]  = p
-            entry_leg[i]    = leg_flag_mat[t, i]  # 记录买入时的腿类型
+            entry_leg[i]    = leg_flag_mat[t, i]
             exec_lot[t, i]  = lots
             bc             += 1
 
         buy_flow[t], buy_count[t], fail_buy_count[t] = -(cash - cash_left), bc, fb
         cash = cash_left
 
-        # 6) 记录 exec/util/NAV
+
         tv = np.sum(W[t, :])
         exec_arr[t] = 0.0 if tv == 0 else (INIT_CASH - cash_left) / (tv * INIT_CASH)
         util_arr[t] = (INIT_CASH - cash_left) / INIT_CASH
@@ -3236,9 +3119,7 @@ def _bt_loop(
         cum_pnl, theo_lot, exec_lot, sell_lot
     )
 
-# ------------------------------------------------------------------------
-# 5. 回测接口：run_backtest_dual_leg_vec（完整打印 & 绘图）
-# ------------------------------------------------------------------------
+
 def run_backtest_dual_leg_vec(
     close_df: pd.DataFrame,
     sample_df: pd.DataFrame,
@@ -3250,7 +3131,7 @@ def run_backtest_dual_leg_vec(
     end: str,
     index_series: pd.Series|None=None
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.DataFrame]:
-    # 1) 数据准备
+
     seg_c = close_df.loc[start:end].ffill().bfill()
     seg_s = sample_df.loc[start:end]
     dates, stocks = seg_c.index, seg_c.columns
@@ -3258,7 +3139,7 @@ def run_backtest_dual_leg_vec(
     price    = seg_c.to_numpy(dtype=np.float64)
     price_ok = (~np.isnan(price)).astype(np.uint8)
 
-    # 2) 涨跌停 / 涨跌幅 / 复牌
+
     uplim = np.array([_uplim_rate(c) for c in stocks], dtype=np.float64)
     lim_up = np.zeros((T, N)); lim_dn = np.zeros((T, N))
     for t in range(1, T):
@@ -3272,7 +3153,7 @@ def run_backtest_dual_leg_vec(
     resume = np.zeros((T, N), dtype=np.uint8)
     resume[1:] = ((price_ok[1:] == 1) & (price_ok[:-1] == 0)).astype(np.uint8)
 
-    # 3) 因子打分 → S_pos
+
     ic_map = final_alphas.set_index('alpha')['orig_mean_ic'].to_dict()
     Zs = []
     for name, wt in w_dict.items():
@@ -3285,7 +3166,7 @@ def run_backtest_dual_leg_vec(
         Zs.append(wt * z)
     S_pos = np.sum(Zs, axis=0)
 
-    # 4) 构建权重矩阵 & 标记
+
     W, leg_flag, exit_flag = build_dualleg_weights(
         dates, stocks, S_pos, price_ok,
         vol_proxy_df.loc[dates],
@@ -3293,7 +3174,7 @@ def run_backtest_dual_leg_vec(
     )
     sample_day = (seg_s.to_numpy() == 1).astype(np.uint8)
 
-    # 5) 主回测
+
     (nav, ex_arr, ut_arr,
      sell_flow, buy_flow, sell_cnt, buy_cnt,
      fail_sell_cnt, fail_buy_cnt,
@@ -3309,7 +3190,7 @@ def run_backtest_dual_leg_vec(
         PARAMS['delay_days']
     )
 
-    # 6) 交易前计划表 plan_df
+
     idx_dates = dates[:-1].repeat(N)
     idx_tcks  = np.tile(stocks, T-1)
     plan_df = pd.DataFrame({
@@ -3320,7 +3201,7 @@ def run_backtest_dual_leg_vec(
         "theoretical_lots": theo_lot.reshape(-1)
     }).set_index(["date","ticker"]).sort_index()
 
-    # 7) 交易执行表 exec_df
+
     sel = (exec_lot.reshape(-1) > 0)
     exec_df = pd.DataFrame({
         "date": idx_dates[sel],
@@ -3331,7 +3212,7 @@ def run_backtest_dual_leg_vec(
     exec_df["ratio"] = exec_df["executed_lots"] / exec_df["theoretical_lots"].replace(0, np.nan)
     exec_df = exec_df.set_index(["date","ticker"]).sort_index()
 
-    # 8) 交易日志 & 按净现金流排序 Top-10
+
     records = []
     for t in range(T-1):
         dt = dates[t]
@@ -3354,23 +3235,23 @@ def run_backtest_dual_leg_vec(
     top10   = net_pnl.sort_values(ascending=False).head(10)
     trade_top10_df = trades_df.loc[top10.index]
 
-    # 暴露 DataFrame 供后续查询
+
     globals().update({
         "plan_df": plan_df,
         "exec_df": exec_df,
         "trade_top10_df": trade_top10_df
     })
 
-    # 9) 结果拼装 & 打印 & 画图
+
     nav_s  = pd.Series(nav,  index=dates,       name="NAV")
     exec_s = pd.Series(ex_arr, index=dates[:-1], name="Exec Rate")
     util_s = pd.Series(ut_arr, index=dates[:-1], name="Util Rate")
     strat_ret = nav_s.pct_change().fillna(0.0)
 
-    print("== 前5日净值 ==\n", nav_s.head(), "\n")
+    print("== First 5 NAV values ==\n", nav_s.head(), "\n")
     print(f"Exec = {exec_s.mean():.2%}, Util = {util_s.mean():.2%}\n")
 
-    # — 日度候选/成交/失败 可视化 —
+
     plt.figure(figsize=(12,3))
     plt.plot(dates[:-1], (W[:-1]>0).sum(axis=1), label="Weighted candidates")
     plt.plot(dates[:-1], buy_cnt,       label="Buy count")
@@ -3378,17 +3259,17 @@ def run_backtest_dual_leg_vec(
     plt.plot(dates[:-1], fail_sell_cnt, label="Failed Sells")
     plt.title("Daily Candidates & Trades"); plt.legend(); plt.grid(); plt.tight_layout(); plt.show()
 
-    # — NAV 曲线 —
+
     plt.figure(figsize=(12,4))
     nav_s.plot(title="NAV"); plt.grid(); plt.tight_layout(); plt.show()
 
-    # — Exec / Util —
+
     fig, (ax1, ax2) = plt.subplots(2,1,figsize=(10,6), sharex=True)
     exec_s.plot(ax=ax1, title="Exec Rate"); ax1.grid(True)
     util_s.plot(ax=ax2, title="Util Rate"); ax2.grid(True)
     plt.tight_layout(); plt.show()
 
-    # — Greedy 候选数 & 理论/实际 lots 比例 —
+
     plt.figure(figsize=(12,4))
     plt.plot(dates[:-1], (theo_lot>0).sum(axis=1), label="Greedy Candidates")
     plt.title("Daily Candidate Counts"); plt.ylabel("Count"); plt.grid(); plt.legend(); plt.tight_layout(); plt.show()
@@ -3400,7 +3281,7 @@ def run_backtest_dual_leg_vec(
     plt.plot(dates[:-1], ratio_day)
     plt.title("Executed/Theoretical Lots Ratio"); plt.ylabel("Ratio"); plt.grid(); plt.tight_layout(); plt.show()
 
-    # — 日度 & 累计收益 vs 指数 —
+
     plt.figure(figsize=(12,4))
     plt.plot(dates, strat_ret*100, label="Strategy Daily Return")
     if index_series is not None:
@@ -3418,7 +3299,7 @@ def run_backtest_dual_leg_vec(
         plt.plot(dates, (1+net_ret).cumprod()-1,  label="Hedged Cum Return")
     plt.ylabel("Cumulative Return (%)"); plt.title("Cumulative Returns"); plt.legend(); plt.grid(); plt.tight_layout(); plt.show()
 
-    # — 现金流 & 交易计数 —
+
     sf_s = pd.Series(sell_flow, index=dates[:-1], name="Sell Cash Net")
     bf_s = pd.Series(buy_flow,  index=dates[:-1], name="Buy Cost Net")
     fig, (ax3, ax4) = plt.subplots(2,1,figsize=(10,6), sharex=True)
@@ -3433,14 +3314,14 @@ def run_backtest_dual_leg_vec(
     plt.axhline(0, color="black", linewidth=0.5)
     plt.legend(); plt.title("Daily Transaction Counts"); plt.grid(); plt.tight_layout(); plt.show()
 
-    # — Top 10 净收益条形图 —
+
     plt.figure(figsize=(10,4))
     top10.plot.bar()
     plt.title("Top 10 Stocks by Net Realized PnL")
     plt.ylabel("Net PnL (CNY)"); plt.xlabel("Ticker")
     plt.grid(axis="y"); plt.tight_layout(); plt.show()
 
-    # — 回测报告 & 对比指标 —
+
     start_nv, end_nv = nav_s.iloc[0], nav_s.iloc[-1]
     total_rt         = end_nv / start_nv - 1
     days             = (dates[-1] - dates[0]).days; years = days / 365.0
@@ -3449,7 +3330,7 @@ def run_backtest_dual_leg_vec(
     sharpe           = ann_ret / ann_vol if ann_vol > 0 else np.nan
     dd               = nav_s / nav_s.cummax() - 1
 
-    print("=== 回测报告 ===")
+    print("=== Backtest Report ===")
     print(f"Start NAV           : {start_nv:.2f}")
     print(f"End NAV             : {end_nv:.2f}")
     print(f"Total Return        : {total_rt:.2%}")
@@ -3461,19 +3342,19 @@ def run_backtest_dual_leg_vec(
     if index_series is not None:
         idx_ser           = index_series.loc[dates].ffill()
         idx_total_rt      = idx_ser.iloc[-1]/idx_ser.iloc[0] - 1
-        hedged_total_rt   = net_ret.cumsum().iloc[-1]   # or (1+net_ret).cumprod()[-1]-1
+        hedged_total_rt   = net_ret.cumsum().iloc[-1]
         hedged_ann_ret    = (1+net_ret).cumprod().iloc[-1]**(1/years) - 1
         hedged_ann_vol    = net_ret.std() * np.sqrt(len(net_ret)/years)
         hedged_sharpe     = hedged_ann_ret / hedged_ann_vol if hedged_ann_vol>0 else np.nan
         hedged_dd         = net_ret.cumsum().cummax() - net_ret.cumsum()
 
-        print("=== 对比指标 ===")
+        print("=== Benchmark Comparison ===")
         print(f"Index Total Return    : {idx_total_rt:.2%}")
         print(f"Strategy Total Return : {total_rt:.2%}")
         print(f"Hedged Total Return   : {hedged_total_rt:.2%}")
         print(f"Average Daily Excess  : {net_ret.mean():.4%}\n")
 
-        print("=== Hedged 年化指标 ===")
+        print("=== Hedged Annualized Metrics ===")
         print(f"Hedged Annualized Return : {hedged_ann_ret:.2%}")
         print(f"Hedged Annualized Vol    : {hedged_ann_vol:.2%}")
         print(f"Hedged Sharpe Ratio      : {hedged_sharpe:.2f}")
@@ -3482,21 +3363,12 @@ def run_backtest_dual_leg_vec(
     return nav_s, exec_s, ut_arr
 
 
-
-# ------------------------------------------------------------------------
-# 6. 示例调用（完整一条龙）
-# ------------------------------------------------------------------------
-
 factor_dict   = build_factor_dict(
     sig_factors, start_test, end_test,
     dates=close.loc[start_test:end_test].index
 )
 w_dict        = {name: 1.0 for name in sig_factors}
 prob_sub      = prob_matrix.loc[start_test:end_test]
-
-
-
-
 
 
 vol_proxy_sub = compute_vol_proxy(logret.loc[start_test:end_test])
@@ -3513,48 +3385,26 @@ nav_s, exec_s, util_s = run_backtest_dual_leg_vec(
 )
 
 
-
-
-
-# 现在可以：
-plan_df.loc["2025-06-03"]
-exec_df.loc["2024-02-05"]  #检查执行日股票的买卖数量
-
 check_symbol = 'sh688578'
-cf = trade_top10_df.loc[check_symbol]  # 获取该股票的所有交易记录
+cf = trade_top10_df.loc[check_symbol]
 print(cf)
-net_cf = cf['cash_flow'].sum()        # 计算净现金流
+net_cf = cf['cash_flow'].sum()
 print(f"Net cashflow of stock {check_symbol}: {net_cf:.2f} CNY")
-
-
-
-
-
-
-
-
-
-
-'''Barra CNE5 Model Factor Analysis'''
 
 
 ret = (close / close.shift(1)) - 1
 print(ret)
 
 
+PATH_INDUSTRY_CSV = GICS_INDUSTRY_CSV_PATH
 
-# 行业因子市值加权正交化
 
-# ===================== 参数区 =====================
-PATH_INDUSTRY_CSV = Path(r"C:/Users/19874/OneDrive/桌面/九坤投资实习/Barra Model/GICS_Industry.csv")
-
-# 策略选项：未匹配股票怎么处理？
-USE_UNK_INDUSTRY   = True      # True -> 未匹配股票归为 'UNK'
-DROP_UNMATCHED     = False     # True -> 直接剔除未匹配股票
-COVERAGE_THRESHOLD = 0.95      # 覆盖率阈值（仅在不开启 UNK/剔除时强制报错）
+USE_UNK_INDUSTRY   = True
+DROP_UNMATCHED     = False
+COVERAGE_THRESHOLD = 0.95
 UNK_NAME           = 'UNK'
 
-# ===================== 工具函数 =====================
+
 def csv_to_close_ticker(csv_ticker: str) -> str:
     """600000.SS → sh600000 ; 000001.SZ → sz000001"""
     code, exch = csv_ticker.strip().split('.')
@@ -3565,7 +3415,7 @@ def close_to_csv_ticker(close_ticker: str) -> str:
     prefix, code = close_ticker[:2], close_ticker[2:]
     return f"{code}.SS" if prefix == 'sh' else f"{code}.SZ"
 
-# ===================== 1. 读取 & 清洗映射 =====================
+
 map_df = pd.read_csv(PATH_INDUSTRY_CSV, dtype=str).rename(columns={
     'ticker'           : 'ticker_csv',
     'CNE5 Factor Name' : 'CNE5_Name'
@@ -3574,49 +3424,48 @@ map_df = pd.read_csv(PATH_INDUSTRY_CSV, dtype=str).rename(columns={
 required_cols = ['ticker_csv','CSV_Sector','CSV_Industry','CNE5_Name','GICS Sector']
 missing_cols  = [c for c in required_cols if c not in map_df.columns]
 if missing_cols:
-    raise KeyError(f"GICS_Industry.csv 缺少必要列: {missing_cols}")
+    raise KeyError(f"GICS_Industry.csv is missing required columns: {missing_cols}")
 
-# 去空格
+
 for c in ['ticker_csv','CSV_Sector','CSV_Industry','CNE5_Name','GICS Sector']:
     map_df[c] = map_df[c].str.strip()
 
-# 转换为 close 风格代码，确保与矩阵统一
+
 map_df['close_ticker'] = map_df['ticker_csv'].apply(csv_to_close_ticker)
 
-# 同一只股票可能多行（不同分类来源），保留第一条或检查冲突
+
 dup = map_df.duplicated(subset='close_ticker', keep=False)
 if dup.any():
-    # 检查是否真的有多个不同行业
+
     grp = map_df[dup].groupby('close_ticker')['CNE5_Name'].nunique()
     conflicts = grp[grp > 1]
     if len(conflicts) > 0:
-        raise ValueError(f"同一股票在 CSV 中出现多个不同行业，请清洗：\n{conflicts}")
-    # 若只是重复行但行业一样，直接去重
+        raise ValueError(f"The same stock maps to multiple industries in CSV. Please clean input:\n{conflicts}")
+
 map_df = map_df.drop_duplicates(subset='close_ticker', keep='first')
 
-# ===================== 2. 构建行业向量 =====================
-# 以 close.columns 为股票池
+
 univ_raw = [c for c in close.columns if c.startswith(('sh','sz'))]
 ticker2ind = map_df.set_index('close_ticker')['CNE5_Name']
 industry_vector = ticker2ind.reindex(univ_raw)
 industry_vector.name = 'industry'
 
-# ===================== 3. 覆盖率诊断 =====================
+
 covered = industry_vector.notna().sum()
 total   = len(industry_vector)
 coverage = covered / total if total else 1.0
-print(f"[INFO] 行业已匹配: {covered}/{total} ({coverage:.2%})")
+print(f"[INFO] Industry mapped: {covered}/{total} ({coverage:.2%})")
 
 unmatched = industry_vector[industry_vector.isna()]
 if len(unmatched) > 0:
-    print("WARN: 未匹配行业股票数 =", len(unmatched))
-    print("示例：")
+    print("WARN: Number of stocks with missing industry mapping =", len(unmatched))
+    print("Examples:")
     print(unmatched.head(15))
 
 if (not USE_UNK_INDUSTRY) and (not DROP_UNMATCHED) and coverage < COVERAGE_THRESHOLD:
-    raise ValueError(f"行业覆盖率仅 {coverage:.2%}。请补 CSV 或启用 UNK / 剔除策略。")
+    raise ValueError(f"Industry coverage is only {coverage:.2%}. Update CSV or enable UNK/drop strategy.")
 
-# 处理未匹配
+
 if USE_UNK_INDUSTRY:
     industry_vector = industry_vector.fillna(UNK_NAME)
 
@@ -3624,35 +3473,35 @@ if DROP_UNMATCHED:
     keep_mask = industry_vector.notna()
     dropped_n = (~keep_mask).sum()
     if dropped_n > 0:
-        print(f"[INFO] 剔除未匹配股票 {dropped_n} 个")
+        print(f"[INFO] Dropped unmatched stocks: {dropped_n}")
     industry_vector = industry_vector[keep_mask]
 
-# ===================== 4. 从 CSV 自动提取行业全集 =====================
-all_inds_in_csv = sorted(industry_vector.unique())
-print(f"[INFO] CSV 中实际行业数量: {len(all_inds_in_csv)}")
 
-# 若 UNK 在里面，保持其在列末尾
+all_inds_in_csv = sorted(industry_vector.unique())
+print(f"[INFO] Number of industries found in CSV: {len(all_inds_in_csv)}")
+
+
 if USE_UNK_INDUSTRY and UNK_NAME in all_inds_in_csv:
     all_inds = [ind for ind in all_inds_in_csv if ind != UNK_NAME] + [UNK_NAME]
 else:
     all_inds = all_inds_in_csv
 
-# ===================== 5. 构建 One-Hot 行业矩阵 =====================
+
 industry_matrix = pd.get_dummies(industry_vector).astype(int)
 industry_matrix = industry_matrix.reindex(columns=all_inds, fill_value=0)
 
-# 每行应当恰好为 1（如果有 UNK 列，允许该列为 1）
+
 check_cols = [c for c in all_inds if c != UNK_NAME] if USE_UNK_INDUSTRY else all_inds
 row_sum = industry_matrix[check_cols].sum(axis=1)
 bad_rows = row_sum[row_sum != 1]
 if len(bad_rows) > 0:
-    print("WARN: 以下股票行业指示不为单一 1：")
+    print("WARN: The following stocks do not have exactly one active industry indicator:")
     print(bad_rows)
 
-# ===================== 6. 国家矩阵（股票 × 1） =====================
+
 country_matrix = pd.DataFrame(1, index=industry_matrix.index, columns=['Country_CN'])
 
-# ===================== 7. 日度行业市值聚合 =====================
+
 def agg_by_industry(df_mcap: pd.DataFrame, ind_mat: pd.DataFrame) -> pd.DataFrame:
     """
     df_mcap: (T × N_stock)
@@ -3663,22 +3512,21 @@ def agg_by_industry(df_mcap: pd.DataFrame, ind_mat: pd.DataFrame) -> pd.DataFram
     out = df_mcap.to_numpy(float) @ ind_mat.to_numpy(float)
     return pd.DataFrame(out, index=df_mcap.index, columns=ind_mat.columns)
 
-# 如果 DROP_UNMATCHED，market_cap 也要裁剪；如果 UNK，仅需保持列一致
+
 cols_keep = industry_matrix.index.tolist()
 market_cap_aligned       = market_cap.reindex(columns=cols_keep)
 market_cap_float_aligned = market_cap_float.reindex(columns=cols_keep)
 
-# 对齐日期
+
 common_dates = market_cap_aligned.index.intersection(market_cap_float_aligned.index)
 market_cap_aligned       = market_cap_aligned.loc[common_dates]
 market_cap_float_aligned = market_cap_float_aligned.loc[common_dates]
 
 
-
 M_total = agg_by_industry(market_cap_aligned, industry_matrix)
 M_float = agg_by_industry(market_cap_float_aligned, industry_matrix)
 
-# ===================== 8. 输出检查 =====================
+
 print("country_matrix :", country_matrix)
 print("industry_vector:", industry_vector)
 print("industry_matrix:", industry_matrix)
@@ -3686,28 +3534,17 @@ print("M_total        :", M_total)
 print("M_float        :", M_float)
 
 
-
-# 统一只看 A股代码（假设都是 sh/sz 开头）
 cols_close = [c for c in close.columns if c.startswith(('sh','sz'))]
 
 miss_in_total = set(cols_close) - set(market_cap.columns)
 miss_in_float = set(cols_close) - set(market_cap_float.columns)
 
-print("缺在 total_mv 的股票数:", len(miss_in_total))
+print("Stocks missing in total_mv:", len(miss_in_total))
 print(sorted(list(miss_in_total))[:20])
-print("缺在 circulating_mv 的股票数:", len(miss_in_float))
+print("Stocks missing in circulating_mv:", len(miss_in_float))
 print(sorted(list(miss_in_float))[:20])
 
 
-
-
-
-
-
-'''行业因子矩阵市值加权正交化处理'''
-
-
-# ---------------- 1. 预处理 ----------------
 def prepare_industry_for_orth(industry_matrix: pd.DataFrame,
                               country_matrix:  pd.DataFrame,
                               mv_float:        pd.DataFrame,
@@ -3715,9 +3552,10 @@ def prepare_industry_for_orth(industry_matrix: pd.DataFrame,
                               drop_unk:        bool = True,
                               unk_name:        str = "UNK"):
     """
-    预处理所有静态对象，只做一次；返回一个字典 ctx，后面 get_D_tilde_for_day 用。
+    Preprocess static objects once and return a context dictionary
+    for get_D_tilde_for_day.
     """
-    # 对齐股票
+
     if drop_missing:
         stocks = mv_float.columns.intersection(industry_matrix.index)
     else:
@@ -3726,107 +3564,78 @@ def prepare_industry_for_orth(industry_matrix: pd.DataFrame,
     D = industry_matrix.loc[stocks]
     C = country_matrix.loc[stocks]
 
-    # 去掉 UNK 列
+
     if drop_unk and unk_name in D.columns:
         D = D.drop(columns=unk_name)
 
-    # 保存 numpy，加速广播
+
     D_val = D.values.astype(np.float64, copy=False)
-    # 常量向量 1_N
+
     ones_N = np.ones(len(stocks), dtype=np.float64)
 
     ctx = {
-        "stocks":  stocks,           # 股票顺序
-        "industries": D.columns,     # 行业列名
-        "D_val":   D_val,            # (N×K)
-        "C":       C,                # 国家矩阵(实际上只有1列，这里保留DataFrame形式)
-        "mv_float": mv_float.loc[:, stocks],  # 重新对齐后的权重矩阵
+        "stocks":  stocks,
+        "industries": D.columns,
+        "D_val":   D_val,
+        "C":       C,
+        "mv_float": mv_float.loc[:, stocks],
         "ones_N":  ones_N,
     }
     return ctx
 
 
-# ---------------- 2. 单日正交化 ----------------
 def get_D_tilde_for_day(date, ctx):
     """
-    给定日期，返回：
-      X_t:  (N×(1+K)) 设计矩阵  [Country, D_tilde]
-      w_t:  (N,)      权重（归一化后）
-    若当日权重全0则返回 None, None
+    For a given date, return:
+      X_t: (N x (1 + K)) design matrix [Country, D_tilde]
+      w_t: (N,) normalized weights
+    Return (None, None) if all weights are zero.
     """
     mv = ctx["mv_float"]
     if date not in mv.index:
-        raise KeyError(f"{date} 不在 mv_float 的索引中")
+        raise KeyError(f"{date} is not present in mv_float index")
 
     w = mv.loc[date].fillna(0.0).values.astype(np.float64)
     tot = w.sum()
     if tot <= 0:
         return None, None
 
-    w_norm = w / tot                      # (N,)
-    D_val  = ctx["D_val"]                 # (N×K)
-    # s_j = w' * D
-    s = w_norm @ D_val                    # (K,)
-    # D_tilde = D - 1 * s
-    D_tilde = D_val - s                   # 广播 (N×K) - (K,)
-    # 约束检查
+    w_norm = w / tot
+    D_val  = ctx["D_val"]
+
+    s = w_norm @ D_val
+
+    D_tilde = D_val - s
+
     if not np.allclose(w_norm @ D_tilde, 0, atol=1e-10):
         raise AssertionError("w' * D_tilde != 0")
 
-    # 组合设计矩阵：国家列 + 正交化行业列
-    country_col = ctx["ones_N"][:, None]  # (N×1)
-    X_t = np.concatenate([country_col, D_tilde], axis=1)  # (N×(1+K))
 
-    # 转回 DataFrame 方便你看
+    country_col = ctx["ones_N"][:, None]
+    X_t = np.concatenate([country_col, D_tilde], axis=1)
+
+
     cols = ["Country_CN"] + list(ctx["industries"])
     X_t_df = pd.DataFrame(X_t, index=ctx["stocks"], columns=cols)
 
     return X_t_df, pd.Series(w_norm, index=ctx["stocks"], name="weight")
 
 
-# ---------------- 3. 使用示例 ----------------
-# 假设你已有：
-#   industry_matrix (N×K)
-#   country_matrix  (N×1)
-#   market_cap_float(T×N)
-#   ret             (T×N) 横截面收益
-
-# 1) 初始化
 ctx = prepare_industry_for_orth(
-    industry_matrix,     # 股票×行业 one-hot
-    country_matrix,      # 股票×1，全1
-    market_cap_float,    # 日期×股票，流通市值
-    drop_missing=True,   # 只保留有流通市值的股票
-    drop_unk=True,       # 去掉 UNK 行业列
+    industry_matrix,
+    country_matrix,
+    market_cap_float,
+    drop_missing=True,
+    drop_unk=True,
     unk_name="UNK"
 )
 
-# 2) 某一天直接拿 X_t
+
 day = market_cap_float.index[102]
 coun_ind_otg_t, w_t = get_D_tilde_for_day(day, ctx)
 
 
-coun_ind_otg_t
-w_t
-
-# 3) 约束检查：如果这个 max 值 ~ 1e-12 级别，就说明正交化成功。
 check = (w_t.values @ coun_ind_otg_t.iloc[:, 1:].values)
 print("max|w'D_tilde| =", np.abs(check).max())
-
-
-
-
-
-'''风格因子-基本面-矩阵处理'''
-
-
-
-
-
-
-
-
-
-
 
 
